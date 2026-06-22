@@ -8,7 +8,7 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install dependencies before copying source so layer is cached on dep changes
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 # Stub the package so pip can resolve extras without the full source tree
 RUN mkdir -p quotegif && touch quotegif/__init__.py
 
