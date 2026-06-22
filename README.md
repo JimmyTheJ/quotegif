@@ -130,26 +130,26 @@ ln -s "$PWD/qg" /usr/local/bin/quotegif
 
 ### Setup
 
-**1. Edit volume paths in `docker-compose.yml`**
-
-Open `docker-compose.yml` and set the two `device:` paths at the bottom to point to your media library and desired output directory:
-
-```yaml
-volumes:
-  media:
-    driver_opts:
-      device: /your/video/library    # ← your TV shows, movies, etc.
-  output:
-    driver_opts:
-      device: /your/output/dir       # ← where GIFs are written
-```
-
-**2. Configure API keys**
+**1. Configure `.env`**
 
 ```bash
 cp .env.example .env
-# Edit .env — set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
 ```
+
+Edit `.env` — at minimum set these (`.env` is gitignored, nothing is committed):
+
+```dotenv
+# Where your video files live on the HOST
+QUOTEGIF_HOST_MEDIA=/path/to/your/video/library
+
+# Where GIFs are written on the HOST
+QUOTEGIF_HOST_OUTPUT=/path/to/where/gifs/are/saved
+
+# API key for whichever provider you're using
+OPENAI_API_KEY=sk-...
+```
+
+Docker Compose reads `.env` automatically for both variable substitution (the volume paths) and passing keys into the container. If either host path is missing, compose will refuse to start with a clear error message.
 
 **3. Build and index**
 
