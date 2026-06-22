@@ -20,6 +20,40 @@ _DEFAULT_CONFIG_PATHS = [
     Path.home() / ".quotegif.toml",
 ]
 
+# Candidate locations for a .env file (first found wins)
+_DEFAULT_DOTENV_PATHS = [
+    Path.cwd() / ".env",
+    Path.home() / ".config" / "quotegif" / ".env",
+    Path.home() / ".quotegif.env",
+]
+
+
+def load_dotenv(dotenv_path: Path | None = None) -> None:
+    """
+    Load a .env file into os.environ using python-dotenv.
+    Existing environment variables are never overwritten (override=False).
+    Searches _DEFAULT_DOTENV_PATHS when no explicit path is given.
+    Silently skips if python-dotenv is not installed or no file is found.
+    """
+    try:
+        from dotenv import load_dotenv as _load  # type: ignore[import]
+    except ImportError:
+        return
+
+    if dotenv_path is not None:
+        _load(dotenv_path, override=False)
+        return
+
+    env_var = os.environ.get("QUOTEGIF_DOTENV")
+    if env_var:
+        _load(Path(env_var), override=False)
+        return
+
+    for candidate in _DEFAULT_DOTENV_PATHS:
+        if candidate.exists():
+            _load(candidate, override=False)
+            return
+
 
 @dataclass
 class GifSettings:
@@ -90,76 +124,139 @@ def _expand_path(p: str | Path) -> Path:
 def _build_config(raw: dict[str, Any]) -> AppConfig:
     cfg = AppConfig()
 
+    # media_folders: TOML list, or QUOTEGIF_MEDIA_FOLDERS as OS path separator-joined string
     if "media_folders" in raw:
         cfg.media_folders = [_expand_path(f) for f in raw["media_folders"]]
+    elif env_folders := os.environ.get("QUOTEGIF_MEDIA_FOLDERS"):
+        cfg.media_folders = [_expand_path(f) for f in env_folders.split(os.pathsep)]
 
     if "output_dir" in raw:
         cfg.output_dir = _expand_path(raw["output_dir"])
+    elif env_out := os.environ.get("QUOTEGIF_OUTPUT_DIR"):
+        cfg.output_dir = _expand_path(env_out)
 
     if "pad_before" in raw:
         cfg.pad_before = float(raw["pad_before"])
+    elif v := os.environ.get("QUOTEGIF_PAD_BEFORE"):
+        cfg.pad_before = float(v)
+
     if "pad_after" in raw:
         cfg.pad_after = float(raw["pad_after"])
+    elif v := os.environ.get("QUOTEGIF_PAD_AFTER"):
+        cfg.pad_after = float(v)
+
     if "max_duration" in raw:
         cfg.max_duration = float(raw["max_duration"])
+    elif v := os.environ.get("QUOTEGIF_MAX_DURATION"):
+        cfg.max_duration = float(v)
 
     if "gif" in raw:
         g = raw["gif"]
         cfg.gif = GifSettings(
-            fps=int(g.get("fps", cfg.gif.fps)),
-            width=int(g.get("width", cfg.gif.width)),
+            fps=int(g.get("fps", os.environ.get("QUOTEGIF_GIF_FPS", cfg.gif.fps))),
+            width=int(g.get("width", os.environ.get("QUOTEGIF_GIF_WIDTH", cfg.gif.width))),
         )
+    else:
+        if v := os.environ.get("QUOTEGIF_GIF_FPS"):
+            cfg.gif.fps = int(v)
+        if v := os.environ.get("QUOTEGIF_GIF_WIDTH"):
+            cfg.gif.width = int(v)
 
+    # Provider selection
+    provider_name = os.environ.get("QUOTEGIF_PROVIDER")
     if "provider" in raw:
         p = raw["provider"]
-        cfg.provider.name = p.get("name", cfg.provider.name)
+        cfg.provider.name = p.get("name", provider_name or cfg.provider.name)
 
         if "openai" in p:
             oa = p["openai"]
             cfg.provider.openai = OpenAISettings(
-                model=oa.get("model", cfg.provider.openai.model),
+                model=oa.get("model", os.environ.get("OPENAI_MODEL", cfg.provider.openai.model)),
                 api_key=oa.get("api_key") or os.environ.get("OPENAI_API_KEY"),
             )
         else:
-            cfg.provider.openai.api_key = (
-                cfg.provider.openai.api_key or os.environ.get("OPENAI_API_KEY")
+            cfg.provider.openai = OpenAISettings(
+                model=os.environ.get("OPENAI_MODEL", cfg.provider.openai.model),
+                api_key=os.environ.get("OPENAI_API_KEY"),
             )
 
         if "anthropic" in p:
             an = p["anthropic"]
             cfg.provider.anthropic = AnthropicSettings(
-                model=an.get("model", cfg.provider.anthropic.model),
+                model=an.get("model", os.environ.get("ANTHROPIC_MODEL", cfg.provider.anthropic.model)),
                 api_key=an.get("api_key") or os.environ.get("ANTHROPIC_API_KEY"),
                 search_api_key=an.get("search_api_key") or os.environ.get("TAVILY_API_KEY"),
             )
         else:
-            cfg.provider.anthropic.api_key = (
-                cfg.provider.anthropic.api_key or os.environ.get("ANTHROPIC_API_KEY")
-            )
-            cfg.provider.anthropic.search_api_key = (
-                cfg.provider.anthropic.search_api_key or os.environ.get("TAVILY_API_KEY")
+            cfg.provider.anthropic = AnthropicSettings(
+                model=os.environ.get("ANTHROPIC_MODEL", cfg.provider.anthropic.model),
+                api_key=os.environ.get("ANTHROPIC_API_KEY"),
+                search_api_key=os.environ.get("TAVILY_API_KEY"),
             )
 
         if "ollama" in p:
             ol = p["ollama"]
             cfg.provider.ollama = OllamaSettings(
-                model=ol.get("model", cfg.provider.ollama.model),
-                host=ol.get("host", cfg.provider.ollama.host),
+                model=ol.get("model", os.environ.get("OLLAMA_MODEL", cfg.provider.ollama.model)),
+                host=ol.get("host", os.environ.get("OLLAMA_HOST", cfg.provider.ollama.host)),
             )
+        else:
+            cfg.provider.ollama = OllamaSettings(
+                model=os.environ.get("OLLAMA_MODEL", cfg.provider.ollama.model),
+                host=os.environ.get("OLLAMA_HOST", cfg.provider.ollama.host),
+            )
+    else:
+        # No [provider] TOML section — read everything from env
+        cfg.provider.name = provider_name or cfg.provider.name
+        cfg.provider.openai = OpenAISettings(
+            model=os.environ.get("OPENAI_MODEL", cfg.provider.openai.model),
+            api_key=os.environ.get("OPENAI_API_KEY"),
+        )
+        cfg.provider.anthropic = AnthropicSettings(
+            model=os.environ.get("ANTHROPIC_MODEL", cfg.provider.anthropic.model),
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            search_api_key=os.environ.get("TAVILY_API_KEY"),
+        )
+        cfg.provider.ollama = OllamaSettings(
+            model=os.environ.get("OLLAMA_MODEL", cfg.provider.ollama.model),
+            host=os.environ.get("OLLAMA_HOST", cfg.provider.ollama.host),
+        )
 
     if "whisper" in raw:
         w = raw["whisper"]
         cfg.whisper = WhisperSettings(
-            enabled=bool(w.get("enabled", cfg.whisper.enabled)),
-            model=w.get("model", cfg.whisper.model),
-            device=w.get("device", cfg.whisper.device),
+            enabled=bool(w.get("enabled", _env_bool("QUOTEGIF_WHISPER_ENABLED", cfg.whisper.enabled))),
+            model=w.get("model", os.environ.get("QUOTEGIF_WHISPER_MODEL", cfg.whisper.model)),
+            device=w.get("device", os.environ.get("QUOTEGIF_WHISPER_DEVICE", cfg.whisper.device)),
+        )
+    else:
+        cfg.whisper = WhisperSettings(
+            enabled=_env_bool("QUOTEGIF_WHISPER_ENABLED", cfg.whisper.enabled),
+            model=os.environ.get("QUOTEGIF_WHISPER_MODEL", cfg.whisper.model),
+            device=os.environ.get("QUOTEGIF_WHISPER_DEVICE", cfg.whisper.device),
         )
 
     return cfg
 
 
-def load_config(path: Path | None = None) -> AppConfig:
-    """Load config from file + environment variables."""
+def _env_bool(key: str, default: bool) -> bool:
+    v = os.environ.get(key)
+    if v is None:
+        return default
+    return v.lower() not in ("0", "false", "no", "off")
+
+
+def load_config(path: Path | None = None, dotenv_path: Path | None = None) -> AppConfig:
+    """
+    Load config from a .env file, a TOML config file, and environment variables.
+
+    Resolution order (later sources win):
+      1. Defaults baked into AppConfig dataclass fields
+      2. .env file  (QUOTEGIF_DOTENV env var > explicit dotenv_path > _DEFAULT_DOTENV_PATHS)
+      3. TOML config file  (--config flag > QUOTEGIF_CONFIG env var > _DEFAULT_CONFIG_PATHS)
+      4. Direct CLI flags applied by cli.py after this function returns
+    """
+    load_dotenv(dotenv_path)
     raw: dict[str, Any] = {}
 
     config_path = path

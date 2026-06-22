@@ -38,7 +38,23 @@ pip install "quotegif[all]"
 
 ## Quick start
 
-### 1. Set your API key
+### 1. Configure via `.env` (recommended)
+
+Copy `.env.example` to `.env` in the project directory (or `~/.config/quotegif/.env`) and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+```dotenv
+OPENAI_API_KEY=sk-...
+QUOTEGIF_MEDIA_FOLDERS=D:\Videos\TV;D:\Videos\Movies
+QUOTEGIF_OUTPUT_DIR=D:\quotegifs
+```
+
+Variables in `.env` are loaded automatically. They do **not** override values already set in your shell.
+
+### 2. Or set environment variables directly
 
 ```bash
 # OpenAI
@@ -47,9 +63,12 @@ export OPENAI_API_KEY=sk-...
 # Anthropic (also needs Tavily for web search)
 export ANTHROPIC_API_KEY=sk-ant-...
 export TAVILY_API_KEY=tvly-...
+
+# Media folders (OS path separator: ; on Windows, : on Unix)
+export QUOTEGIF_MEDIA_FOLDERS="/TV Shows:/Movies"
 ```
 
-### 2. Create a config file
+### 3. Or use a TOML config file (optional, for more complex setups)
 
 Copy `config.example.toml` to `~/.config/quotegif/config.toml` and edit it:
 
@@ -143,12 +162,30 @@ Full documented example in [`config.example.toml`](config.example.toml).
 
 ### Environment variables
 
-| Variable | Purpose |
-|----------|---------|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `TAVILY_API_KEY` | Tavily search key (used with Anthropic) |
-| `QUOTEGIF_CONFIG` | Path to config TOML (overrides default locations) |
+All settings can be configured via environment variables or a `.env` file. Copy `.env.example` to `.env` to get started.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `TAVILY_API_KEY` | — | Tavily search key (used with Anthropic) |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model override |
+| `ANTHROPIC_MODEL` | `claude-3-5-sonnet-20241022` | Anthropic model override |
+| `OLLAMA_MODEL` | `llama3.1` | Ollama model override |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama host |
+| `QUOTEGIF_PROVIDER` | `openai` | Active LLM provider |
+| `QUOTEGIF_MEDIA_FOLDERS` | — | Path-separator-joined list of media dirs |
+| `QUOTEGIF_OUTPUT_DIR` | `~/quotegifs` | GIF output directory |
+| `QUOTEGIF_PAD_BEFORE` | `1.5` | Seconds before quote |
+| `QUOTEGIF_PAD_AFTER` | `2.5` | Seconds after quote |
+| `QUOTEGIF_MAX_DURATION` | `12` | Max clip length in seconds |
+| `QUOTEGIF_GIF_FPS` | `12` | GIF frames per second |
+| `QUOTEGIF_GIF_WIDTH` | `480` | GIF pixel width |
+| `QUOTEGIF_WHISPER_ENABLED` | `true` | Enable Whisper fallback |
+| `QUOTEGIF_WHISPER_MODEL` | `base` | Whisper model size |
+| `QUOTEGIF_WHISPER_DEVICE` | `auto` | Whisper compute device |
+| `QUOTEGIF_CONFIG` | — | Path to TOML config file |
+| `QUOTEGIF_DOTENV` | — | Path to `.env` file (overrides default search) |
 
 ---
 
