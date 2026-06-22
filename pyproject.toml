@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quotegif"
+version = "0.1.0"
+description = "Turn a vague remembered quote into an animated GIF of the exact moment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "guessit>=3.8",
+    "srt>=3.5",
+    "rapidfuzz>=3.9",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.30"]
+anthropic = ["anthropic>=0.28", "tavily-python>=0.3"]
+ollama = ["ollama>=0.2"]
+whisper = ["faster-whisper>=1.0"]
+all = [
+    "openai>=1.30",
+    "anthropic>=0.28",
+    "tavily-python>=0.3",
+    "ollama>=0.2",
+    "faster-whisper>=1.0",
+]
+
+[project.scripts]
+quotegif = "quotegif.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quotegif"]

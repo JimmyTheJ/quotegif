@@ -1,0 +1,51 @@
+# QuoteGif example configuration
+# Copy to ~/.config/quotegif/config.toml or pass via QUOTEGIF_CONFIG env var.
+# API keys are read from environment variables by default; you can also set them
+# here, but prefer env vars to avoid committing secrets.
+
+# ----- Media library -----
+# Folders to scan recursively for video files.
+media_folders = [
+    "C:/Users/you/Videos/TV Shows",
+    "C:/Users/you/Videos/Movies",
+]
+
+# Where to write output GIFs. Defaults to ~/quotegifs.
+output_dir = "~/quotegifs"
+
+# ----- Clip padding -----
+pad_before = 1.5   # seconds before the matched cue starts
+pad_after  = 2.5   # seconds after the matched cue ends
+max_duration = 12  # hard cap on total clip length (seconds)
+
+# ----- GIF settings -----
+[gif]
+fps   = 12
+width = 480        # pixel width; height is auto-calculated
+
+# ----- LLM provider -----
+[provider]
+name = "openai"   # "openai" | "anthropic" | "ollama"
+
+# OpenAI — uses the Responses API with built-in web_search tool
+[provider.openai]
+# api_key = "sk-..."   # or set OPENAI_API_KEY env var
+model = "gpt-4o"
+
+# Anthropic — uses claude-3-5-sonnet with an external search tool
+[provider.anthropic]
+# api_key = "sk-ant-..."   # or set ANTHROPIC_API_KEY env var
+model = "claude-3-5-sonnet-20241022"
+# Tavily powers web search for Anthropic. Set TAVILY_API_KEY or uncomment:
+# search_api_key = "tvly-..."
+
+# Ollama — local, no web search (relies on model's training knowledge)
+[provider.ollama]
+model = "llama3.1"
+host  = "http://localhost:11434"
+
+# ----- Whisper fallback (transcription) -----
+[whisper]
+enabled = true
+model   = "base"   # tiny | base | small | medium | large-v3
+device  = "auto"   # auto | cpu | cuda
