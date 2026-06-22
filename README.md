@@ -99,47 +99,75 @@ quotegif find "that's what she said"
 
 ## Docker / Docker Compose
 
-Docker Compose is the recommended way to run quotegif if you don't want to install Python or ffmpeg locally.
+Docker packages Python, ffmpeg, and all dependencies so you don't need to install anything locally.
+
+### How it works
+
+This is a CLI tool, not a server. Docker Compose doesn't run a persistent container you send commands to — instead, each command spins up a fresh container, runs, and exits:
+
+```bash
+docker compose run --rm quotegif find "no soup for you"
+#                  ^^^^^^^^^^^^^^^^ boilerplate every time
+```
+
+To avoid typing all that, use the included wrapper script:
+
+```bash
+# Linux / macOS
+./qg find "no soup for you"
+
+# Windows
+qg find "no soup for you"
+```
+
+`qg` (or `qg.bat` on Windows) just expands to the `docker compose run --rm quotegif` prefix. To use it from anywhere, add the project directory to your `PATH`, or symlink it:
+
+```bash
+# Linux / macOS — make it available system-wide
+chmod +x qg
+ln -s "$PWD/qg" /usr/local/bin/quotegif
+```
 
 ### Setup
 
+**1. Edit volume paths in `docker-compose.yml`**
+
+Open `docker-compose.yml` and set the two `device:` paths at the bottom to point to your media library and desired output directory:
+
+```yaml
+volumes:
+  media:
+    driver_opts:
+      device: /your/video/library    # ← your TV shows, movies, etc.
+  output:
+    driver_opts:
+      device: /your/output/dir       # ← where GIFs are written
+```
+
+**2. Configure API keys**
+
 ```bash
-# 1. Set your media and output paths in docker-compose.yml
-#    Edit the two 'device' lines under the volumes: section:
-#
-#    volumes:
-#      media:
-#        driver_opts:
-#          device: /your/media/root   ← your video library
-#      output:
-#        driver_opts:
-#          device: /your/output/dir   ← where GIFs are written
-
-# 2. Copy .env.example, add your API key(s)
 cp .env.example .env
-# then edit .env and set OPENAI_API_KEY (and/or ANTHROPIC_API_KEY etc.)
+# Edit .env — set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+```
 
-# 3. Build the image
+**3. Build and index**
+
+```bash
 docker compose build
+./qg index        # scan your media library (only needed once, or after adding files)
+./qg config       # verify everything looks right
 ```
 
 ### Usage
 
 ```bash
-# Find a quote and render a GIF
-docker compose run --rm quotegif find "no soup for you"
-
-# With options
-docker compose run --rm quotegif find "that's what she said" --pad-before 2 --width 640
-
-# Skip LLM identification (you know the episode)
-docker compose run --rm quotegif find "no soup for you" --episode "Seinfeld S07E06"
-
-# Rebuild the library index
-docker compose run --rm quotegif index
-
-# Show resolved config
-docker compose run --rm quotegif config
+./qg find "no soup for you"
+./qg find "that's what she said" --pad-before 2 --width 640
+./qg find "no soup for you" --episode "Seinfeld S07E06"   # skip LLM, you know the episode
+./qg find "no soup for you" --provider ollama              # use local model
+./qg find "no soup for you" --model gpt-4o-mini            # cheaper OpenAI model
+./qg compare "no soup for you" --providers openai,ollama   # compare two providers
 ```
 
 ### GPU variant (faster Whisper)
@@ -154,14 +182,14 @@ This uses `QUOTEGIF_WHISPER_DEVICE=cuda` automatically.
 
 ### Volume layout
 
-| Container path | Purpose | Host source (from `.env`) |
-|----------------|---------|--------------------------|
-| `/media` | Your video files (read-only) | `QUOTEGIF_HOST_MEDIA` |
-| `/output` | GIF output (read-write) | `QUOTEGIF_HOST_OUTPUT` |
-| Named volume `quotegif-index` | Library index cache | Docker-managed |
-| Named volume `quotegif-whisper` | Whisper model weights | Docker-managed |
+| Container path | Purpose | Configured in |
+|----------------|---------|---------------|
+| `/media` | Your video files (read-only) | `docker-compose.yml` → `volumes.media.driver_opts.device` |
+| `/output` | GIF output (read-write) | `docker-compose.yml` → `volumes.output.driver_opts.device` |
+| `quotegif-index` (named) | Library index cache | Docker-managed |
+| `quotegif-whisper` (named) | Whisper model weights | Docker-managed |
 
-> **Multiple media folders:** If your media is spread across multiple host directories, point the `media` volume's `device` at a common parent root and organise subdirectories under it (`TV/`, `Movies/`, etc.). The container indexes `/media` recursively.
+> **Multiple media folders:** Point the `media` volume's `device` at a single parent directory and organise subdirectories under it (`TV/`, `Movies/`, etc.). The container indexes `/media` recursively.
 
 ---
 
