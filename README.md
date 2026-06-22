@@ -104,24 +104,22 @@ Docker Compose is the recommended way to run quotegif if you don't want to insta
 ### Setup
 
 ```bash
-# 1. Copy .env.example and fill in your API keys + host media path
+# 1. Set your media and output paths in docker-compose.yml
+#    Edit the two 'device' lines under the volumes: section:
+#
+#    volumes:
+#      media:
+#        driver_opts:
+#          device: /your/media/root   ← your video library
+#      output:
+#        driver_opts:
+#          device: /your/output/dir   ← where GIFs are written
+
+# 2. Copy .env.example, add your API key(s)
 cp .env.example .env
-```
+# then edit .env and set OPENAI_API_KEY (and/or ANTHROPIC_API_KEY etc.)
 
-Edit `.env` and set at minimum:
-
-```dotenv
-OPENAI_API_KEY=sk-...
-
-# Host directory containing your video files (mounted read-only inside the container)
-QUOTEGIF_HOST_MEDIA=D:\Videos
-
-# Host directory where GIFs are written (mounted read-write)
-QUOTEGIF_HOST_OUTPUT=D:\quotegifs
-```
-
-```bash
-# 2. Build the image
+# 3. Build the image
 docker compose build
 ```
 
@@ -163,11 +161,7 @@ This uses `QUOTEGIF_WHISPER_DEVICE=cuda` automatically.
 | Named volume `quotegif-index` | Library index cache | Docker-managed |
 | Named volume `quotegif-whisper` | Whisper model weights | Docker-managed |
 
-> **Multiple media folders:** If your media is spread across multiple host directories, mount them as subdirectories of a single root and point `QUOTEGIF_HOST_MEDIA` at that root:
-> ```
-> QUOTEGIF_HOST_MEDIA=D:\AllMedia
-> ```
-> Then structure it as `D:\AllMedia\TV`, `D:\AllMedia\Movies`, etc. The container indexes everything under `/media` recursively.
+> **Multiple media folders:** If your media is spread across multiple host directories, point the `media` volume's `device` at a common parent root and organise subdirectories under it (`TV/`, `Movies/`, etc.). The container indexes `/media` recursively.
 
 ---
 
