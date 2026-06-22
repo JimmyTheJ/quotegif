@@ -48,7 +48,7 @@ def _run_tavily_search(query: str, api_key: str) -> str:
 
 
 class AnthropicProvider:
-    def __init__(self, settings: AnthropicSettings) -> None:
+    def __init__(self, settings: AnthropicSettings, model_override: str | None = None) -> None:
         try:
             import anthropic
         except ImportError as e:
@@ -57,7 +57,7 @@ class AnthropicProvider:
             ) from e
 
         self._client = anthropic.Anthropic(api_key=settings.api_key)
-        self._model = settings.model
+        self._model = model_override or settings.model
         self._search_key = settings.search_api_key
 
     def identify(self, quote: str) -> EpisodeRef:

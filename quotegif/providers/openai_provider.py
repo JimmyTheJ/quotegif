@@ -39,7 +39,7 @@ _RESPONSE_SCHEMA = {
 
 
 class OpenAIProvider:
-    def __init__(self, settings: OpenAISettings) -> None:
+    def __init__(self, settings: OpenAISettings, model_override: str | None = None) -> None:
         try:
             import openai
         except ImportError as e:
@@ -48,7 +48,7 @@ class OpenAIProvider:
             ) from e
 
         self._client = openai.OpenAI(api_key=settings.api_key)
-        self._model = settings.model
+        self._model = model_override or settings.model
 
     def identify(self, quote: str) -> EpisodeRef:
         from openai import OpenAI  # noqa: F401 – already imported above

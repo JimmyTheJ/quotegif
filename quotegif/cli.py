@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -47,7 +48,8 @@ def find(
     pad_after: Annotated[float, typer.Option("--pad-after", help="Seconds after quote end")] = -1,
     fps: Annotated[int, typer.Option("--fps", help="GIF frames per second")] = -1,
     width: Annotated[int, typer.Option("--width", help="GIF pixel width")] = -1,
-    provider: Annotated[Optional[str], typer.Option("--provider", help="Override LLM provider")] = None,
+    provider: Annotated[Optional[str], typer.Option("--provider", help="LLM provider: openai | anthropic | ollama")] = None,
+    model: Annotated[Optional[str], typer.Option("--model", help="Override the model used by the provider (e.g. gpt-4o-mini, llama3.2)")] = None,
     episode: Annotated[Optional[str], typer.Option("--episode", help='Skip LLM, specify episode directly e.g. "The Office S03E14"')] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm low-confidence and ambiguous matches")] = False,
     open_gif: Annotated[bool, typer.Option("--open", help="Open the GIF after creation")] = False,
@@ -57,7 +59,6 @@ def find(
     _require_ffmpeg()
     cfg = _load_cfg(config_path)
 
-    # Apply CLI overrides
     if pad_before >= 0:
         cfg.pad_before = pad_before
     if pad_after >= 0:
@@ -80,11 +81,17 @@ def find(
         ref = _parse_episode_string(episode, quote)
         console.print(f"[dim]Using provided episode:[/dim] {ref.display()}")
     else:
-        console.print(f"[bold cyan]Identifying:[/bold cyan] \"{quote}\"")
+        provider_name = provider or cfg.provider.name
+        from quotegif.providers.registry import get_active_model
+        model_label = get_active_model(cfg, provider_name, model)
+        console.print(
+            f"[bold cyan]Identifying:[/bold cyan] \"{quote}\"  "
+            f"[dim]({provider_name} / {model_label})[/dim]"
+        )
         try:
             from quotegif.identify import identify_quote
             with console.status("Asking LLM (with web search)…"):
-                ref = identify_quote(quote, cfg, provider_override=provider)
+                ref = identify_quote(quote, cfg, provider_override=provider, model_override=model)
         except Exception as e:
             err_console.print(f"[red]Identification failed:[/red] {e}")
             raise typer.Exit(1)
@@ -192,6 +199,159 @@ def find(
 
 
 @app.command()
+def compare(
+    quote: Annotated[str, typer.Argument(help="The quote to identify")],
+    providers: Annotated[Optional[str], typer.Option(
+        "--providers",
+        help="Comma-separated providers to compare (default: all configured). e.g. openai,ollama",
+    )] = None,
+    models: Annotated[Optional[str], typer.Option(
+        "--models",
+        help="Comma-separated model overrides, matched by position to --providers. e.g. gpt-4o-mini,llama3.2",
+    )] = None,
+    gif: Annotated[bool, typer.Option("--gif", help="After comparing, pick a result and render the GIF")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm when proceeding to GIF")] = False,
+    config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
+) -> None:
+    """
+    Run quote identification through multiple providers in parallel and compare results.
+
+    Examples:
+
+      quotegif compare "that's what she said"
+      quotegif compare "no soup for you" --providers openai,ollama
+      quotegif compare "no soup for you" --providers openai,ollama --models gpt-4o-mini,llama3.2
+      quotegif compare "no soup for you" --gif
+    """
+    cfg = _load_cfg(config_path)
+
+    from quotegif.identify import identify_quote
+    from quotegif.providers.registry import KNOWN_PROVIDERS, get_active_model
+
+    # Resolve which providers to run
+    if providers:
+        provider_list = [p.strip() for p in providers.split(",")]
+        unknown = [p for p in provider_list if p not in KNOWN_PROVIDERS]
+        if unknown:
+            err_console.print(f"[red]Unknown providers:[/red] {', '.join(unknown)}. Choose from: {', '.join(KNOWN_PROVIDERS)}")
+            raise typer.Exit(1)
+    else:
+        # Default: run all providers that appear to have credentials
+        provider_list = list(_configured_providers(cfg))
+        if not provider_list:
+            err_console.print("[red]No providers appear to be configured.[/red] Set API keys or run with --providers.")
+            raise typer.Exit(1)
+
+    # Resolve per-provider model overrides
+    model_list: list[str | None]
+    if models:
+        raw = [m.strip() or None for m in models.split(",")]
+        # Pad or truncate to match provider_list length
+        model_list = (raw + [None] * len(provider_list))[: len(provider_list)]
+    else:
+        model_list = [None] * len(provider_list)
+
+    provider_model_pairs = list(zip(provider_list, model_list))
+
+    console.print(f"[bold cyan]Comparing[/bold cyan] \"{quote}\" across {len(provider_model_pairs)} provider(s)…\n")
+
+    # Run all providers in parallel
+    results: dict[str, EpisodeRef | Exception] = {}
+
+    def _run(pname: str, moverride: str | None) -> tuple[str, EpisodeRef | Exception]:
+        try:
+            ref = identify_quote(quote, cfg, provider_override=pname, model_override=moverride)
+            return pname, ref
+        except Exception as exc:
+            return pname, exc
+
+    with ThreadPoolExecutor(max_workers=len(provider_model_pairs)) as pool:
+        futures = {
+            pool.submit(_run, pname, moverride): (pname, moverride)
+            for pname, moverride in provider_model_pairs
+        }
+        # Show a live status while waiting
+        completed = 0
+        total = len(futures)
+        with console.status(f"Waiting for results (0/{total})…") as status:
+            for future in as_completed(futures):
+                pname, ref_or_exc = future.result()
+                results[pname] = ref_or_exc
+                completed += 1
+                status.update(f"Waiting for results ({completed}/{total})…")
+
+    # Display comparison table
+    table = Table(title=f'Comparison results for: "{quote}"', show_lines=True)
+    table.add_column("Provider", style="bold", no_wrap=True)
+    table.add_column("Model", style="dim", no_wrap=True)
+    table.add_column("Title")
+    table.add_column("Episode")
+    table.add_column("Exact quote", overflow="fold")
+    table.add_column("Conf", justify="right")
+    table.add_column("Reasoning", overflow="fold")
+
+    ordered_results: list[tuple[str, str | None, EpisodeRef | Exception]] = []
+    for pname, moverride in provider_model_pairs:
+        res = results.get(pname)
+        model_label = get_active_model(cfg, pname, moverride)
+        ordered_results.append((pname, model_label, res))
+
+        if isinstance(res, Exception):
+            table.add_row(pname, model_label, f"[red]ERROR[/red]", "", str(res), "", "")
+        else:
+            conf_color = "green" if res.confidence >= 0.7 else "yellow" if res.confidence >= 0.4 else "red"
+            table.add_row(
+                pname,
+                model_label,
+                res.title,
+                res.display() if res.media_type == "tv" else (str(res.year) if res.year else "–"),
+                f'"{res.exact_quote}"' if res.exact_quote else "–",
+                f"[{conf_color}]{res.confidence:.0%}[/{conf_color}]",
+                res.reasoning,
+            )
+
+    console.print(table)
+
+    if not gif:
+        # Print hint for continuing to GIF
+        console.print(
+            "\n[dim]To render a GIF from one of these results, run:[/dim]\n"
+            f'  quotegif find "{quote}" --provider <name>\n'
+            f'  quotegif find "{quote}" --provider <name> --model <model>\n'
+            "Or re-run with [bold]--gif[/bold] to pick interactively."
+        )
+        return
+
+    # -- Optional: pick a result and continue to GIF --
+    _require_ffmpeg()
+
+    if not cfg.media_folders:
+        err_console.print("[red]No media_folders configured.[/red]")
+        raise typer.Exit(1)
+
+    successful = [(pname, mlabel, res) for pname, mlabel, res in ordered_results if isinstance(res, EpisodeRef)]
+    if not successful:
+        err_console.print("[red]All providers failed — cannot proceed to GIF.[/red]")
+        raise typer.Exit(1)
+
+    if len(successful) == 1 or yes:
+        chosen_name, chosen_model, chosen_ref = successful[0]
+    else:
+        console.print("\n[bold]Which result do you want to use for the GIF?[/bold]")
+        for i, (pname, mlabel, res) in enumerate(successful, 1):
+            console.print(f"  [bold]{i}[/bold]. {pname} / {mlabel}  →  {res.display()}  ({res.confidence:.0%})")
+        choice = Prompt.ask(
+            "Pick one",
+            choices=[str(i) for i in range(1, len(successful) + 1)],
+            default="1",
+        )
+        chosen_name, chosen_model, chosen_ref = successful[int(choice) - 1]
+
+    console.print(f"\n[dim]Using:[/dim] {chosen_name} / {chosen_model}  →  {chosen_ref.display()}")
+    _render_gif(chosen_ref, quote, cfg, yes=yes)
+
+
+@app.command()
 def index(
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
 ) -> None:
@@ -239,6 +399,8 @@ def show_config(
     cfg = _load_cfg(config_path)
     ok, ffmpeg_msg = check_ffmpeg()
 
+    from quotegif.providers.registry import KNOWN_PROVIDERS, get_active_model
+
     table = Table(title="Resolved Configuration", show_header=False)
     table.add_column("Setting", style="bold")
     table.add_column("Value")
@@ -250,14 +412,20 @@ def show_config(
     table.add_row("max_duration", f"{cfg.max_duration}s")
     table.add_row("gif.fps", str(cfg.gif.fps))
     table.add_row("gif.width", f"{cfg.gif.width}px")
-    table.add_row("provider", cfg.provider.name)
+    table.add_row("provider (default)", cfg.provider.name)
+
+    for pname in KNOWN_PROVIDERS:
+        model = get_active_model(cfg, pname)
+        has_key = _provider_has_key(cfg, pname)
+        key_indicator = "[green]key set[/green]" if has_key else "[dim]no key[/dim]"
+        table.add_row(f"  {pname}", f"{model}  {key_indicator}")
+
     table.add_row("whisper.enabled", str(cfg.whisper.enabled))
     table.add_row("whisper.model", cfg.whisper.model)
     table.add_row("ffmpeg", f"{'[green]OK[/green]' if ok else '[red]MISSING[/red]'} – {ffmpeg_msg}")
 
     console.print(table)
 
-    # Config file location info
     from quotegif.config import _DEFAULT_CONFIG_PATHS
     console.print("\n[dim]Default config search paths:[/dim]")
     for p in _DEFAULT_CONFIG_PATHS:
@@ -266,7 +434,113 @@ def show_config(
     console.print("  (or set [bold]QUOTEGIF_CONFIG[/bold] env var)")
 
 
+# ---- shared GIF rendering (used by both find and compare --gif) ----
+
+def _render_gif(ref: EpisodeRef, original_quote: str, cfg: AppConfig, yes: bool = False) -> None:
+    from quotegif.library import find_media, get_index
+    from quotegif.matcher import match_quote
+    from quotegif.subtitles import get_cues
+
+    console.print(f"[bold cyan]Searching library[/bold cyan] for: {ref.display()}")
+    with console.status("Loading library index…"):
+        entries = get_index(cfg)
+
+    matches = find_media(ref, entries)
+    if not matches:
+        err_console.print(
+            f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
+            "Run [bold]quotegif index[/bold] to rebuild the index."
+        )
+        raise typer.Exit(1)
+
+    media_path = matches[0].path
+    if len(matches) > 1 and not yes:
+        media_path = _pick_file(matches)
+
+    console.print(f"[dim]File:[/dim] {media_path}")
+
+    search_query = ref.exact_quote or original_quote
+    with console.status("Loading subtitles…"):
+        cues = get_cues(media_path)
+
+    best_cue = None
+    if cues:
+        console.print(f"[dim]Found {len(cues)} subtitle cues.[/dim]")
+        best_cue = match_quote(search_query, cues)
+
+    if best_cue is None and cfg.whisper.enabled:
+        console.print("[yellow]No subtitle match found.[/yellow] Falling back to Whisper transcription…")
+        try:
+            from quotegif.transcribe import transcribe
+            with console.status(f"Transcribing with Whisper ({cfg.whisper.model})…"):
+                whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
+            best_cue = match_quote(search_query, whisper_cues)
+        except Exception as e:
+            err_console.print(f"[red]Transcription failed:[/red] {e}")
+
+    if best_cue is None:
+        err_console.print("[red]Could not locate the quote in the episode.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Matched cue[/green] at "
+        f"[bold]{best_cue.start:.1f}s – {best_cue.end:.1f}s[/bold]: "
+        f"[italic]\"{best_cue.text}\"[/italic]"
+    )
+
+    spec = ClipSpec(
+        media_path=media_path,
+        cue=best_cue,
+        pad_before=cfg.pad_before,
+        pad_after=cfg.pad_after,
+        max_duration=cfg.max_duration,
+    )
+    console.print(
+        f"[bold cyan]Rendering GIF[/bold cyan] "
+        f"({spec.clip_start:.1f}s – {spec.clip_end:.1f}s, "
+        f"{spec.duration:.1f}s, {cfg.gif.fps}fps, {cfg.gif.width}px wide)…"
+    )
+
+    from quotegif.gifmaker import make_gif
+    try:
+        with console.status("Running ffmpeg…"):
+            out_path = make_gif(
+                spec=spec,
+                output_dir=cfg.output_dir,
+                fps=cfg.gif.fps,
+                width=cfg.gif.width,
+                episode_label=ref.display(),
+            )
+    except RuntimeError as e:
+        err_console.print(f"[red]GIF creation failed:[/red] {e}")
+        raise typer.Exit(1)
+
+    console.print(Panel(f"[bold green]Done![/bold green] {out_path}", expand=False))
+
+
 # ---- helpers ----
+
+def _configured_providers(cfg: AppConfig) -> list[str]:
+    """Return provider names that have credentials or don't require them (ollama)."""
+    out = []
+    if cfg.provider.openai.api_key:
+        out.append("openai")
+    if cfg.provider.anthropic.api_key:
+        out.append("anthropic")
+    # Ollama needs no API key — include it if it's the default or if openai is also present
+    out.append("ollama")
+    return out
+
+
+def _provider_has_key(cfg: AppConfig, name: str) -> bool:
+    if name == "openai":
+        return bool(cfg.provider.openai.api_key)
+    if name == "anthropic":
+        return bool(cfg.provider.anthropic.api_key)
+    if name == "ollama":
+        return True  # local, no key needed
+    return False
+
 
 def _show_ref(ref: EpisodeRef) -> None:
     table = Table(title="Identified Source", show_header=False)
@@ -300,7 +574,6 @@ def _pick_file(matches) -> Path:
 
 
 def _parse_episode_string(text: str, fallback_quote: str) -> EpisodeRef:
-    """Parse a string like 'The Office S03E14' into an EpisodeRef."""
     import re
     pattern = r"^(.*?)\s+[Ss](\d+)[Ee](\d+)\s*$"
     m = re.match(pattern, text.strip())

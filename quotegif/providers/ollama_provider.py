@@ -24,7 +24,7 @@ Note: You do not have access to web search, so base your answer on your training
 
 
 class OllamaProvider:
-    def __init__(self, settings: OllamaSettings) -> None:
+    def __init__(self, settings: OllamaSettings, model_override: str | None = None) -> None:
         try:
             import ollama  # noqa: F401
         except ImportError as e:
@@ -32,7 +32,7 @@ class OllamaProvider:
                 "ollama package not installed. Run: pip install 'quotegif[ollama]'"
             ) from e
 
-        self._model = settings.model
+        self._model = model_override or settings.model
         self._host = settings.host
 
     def identify(self, quote: str) -> EpisodeRef:
