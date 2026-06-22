@@ -97,6 +97,80 @@ quotegif find "that's what she said"
 
 ---
 
+## Docker / Docker Compose
+
+Docker Compose is the recommended way to run quotegif if you don't want to install Python or ffmpeg locally.
+
+### Setup
+
+```bash
+# 1. Copy .env.example and fill in your API keys + host media path
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
+
+```dotenv
+OPENAI_API_KEY=sk-...
+
+# Host directory containing your video files (mounted read-only inside the container)
+QUOTEGIF_HOST_MEDIA=D:\Videos
+
+# Host directory where GIFs are written (mounted read-write)
+QUOTEGIF_HOST_OUTPUT=D:\quotegifs
+```
+
+```bash
+# 2. Build the image
+docker compose build
+```
+
+### Usage
+
+```bash
+# Find a quote and render a GIF
+docker compose run --rm quotegif find "no soup for you"
+
+# With options
+docker compose run --rm quotegif find "that's what she said" --pad-before 2 --width 640
+
+# Skip LLM identification (you know the episode)
+docker compose run --rm quotegif find "no soup for you" --episode "Seinfeld S07E06"
+
+# Rebuild the library index
+docker compose run --rm quotegif index
+
+# Show resolved config
+docker compose run --rm quotegif config
+```
+
+### GPU variant (faster Whisper)
+
+If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed:
+
+```bash
+docker compose --profile gpu run --rm quotegif-gpu find "winter is coming"
+```
+
+This uses `QUOTEGIF_WHISPER_DEVICE=cuda` automatically.
+
+### Volume layout
+
+| Container path | Purpose | Host source (from `.env`) |
+|----------------|---------|--------------------------|
+| `/media` | Your video files (read-only) | `QUOTEGIF_HOST_MEDIA` |
+| `/output` | GIF output (read-write) | `QUOTEGIF_HOST_OUTPUT` |
+| Named volume `quotegif-index` | Library index cache | Docker-managed |
+| Named volume `quotegif-whisper` | Whisper model weights | Docker-managed |
+
+> **Multiple media folders:** If your media is spread across multiple host directories, mount them as subdirectories of a single root and point `QUOTEGIF_HOST_MEDIA` at that root:
+> ```
+> QUOTEGIF_HOST_MEDIA=D:\AllMedia
+> ```
+> Then structure it as `D:\AllMedia\TV`, `D:\AllMedia\Movies`, etc. The container indexes everything under `/media` recursively.
+
+---
+
 ## Commands
 
 ### `quotegif find <quote>`

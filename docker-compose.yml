@@ -1,0 +1,64 @@
+name: quotegif
+
+# ---------------------------------------------------------------------------
+# Volume paths (set in .env or your shell — these are compose-level variables,
+# not passed into the container):
+#
+#   QUOTEGIF_HOST_MEDIA   – host directory containing your video files
+#                           mounted read-only at /media inside the container
+#                           default: ./media  (relative to this file)
+#
+#   QUOTEGIF_HOST_OUTPUT  – host directory where GIFs are written
+#                           mounted read-write at /output inside the container
+#                           default: ./output (relative to this file)
+# ---------------------------------------------------------------------------
+
+services:
+  quotegif:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Load API keys and QUOTEGIF_* settings from .env (optional — won't fail
+    # if the file doesn't exist; shell env vars take precedence either way)
+    env_file:
+      - path: .env
+        required: false
+    # These override anything .env might set for the container-internal paths
+    environment:
+      QUOTEGIF_MEDIA_FOLDERS: /media
+      QUOTEGIF_OUTPUT_DIR: /output
+    volumes:
+      # Media library (read-only inside container)
+      - ${QUOTEGIF_HOST_MEDIA:-./media}:/media:ro
+      # GIF output (read-write)
+      - ${QUOTEGIF_HOST_OUTPUT:-./output}:/output
+      # Persistent caches: library index + Whisper model weights
+      - quotegif-index:/root/.cache/quotegif
+      - quotegif-whisper:/root/.cache/huggingface
+    stdin_open: true
+    tty: true
+
+  # GPU variant — activate with: docker compose --profile gpu run quotegif-gpu find "..."
+  # Requires the NVIDIA Container Toolkit on the host.
+  quotegif-gpu:
+    extends:
+      service: quotegif
+    profiles:
+      - gpu
+    environment:
+      QUOTEGIF_MEDIA_FOLDERS: /media
+      QUOTEGIF_OUTPUT_DIR: /output
+      QUOTEGIF_WHISPER_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  quotegif-index:
+    driver: local
+  quotegif-whisper:
+    driver: local
