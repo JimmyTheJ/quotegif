@@ -32,6 +32,9 @@ def _guess_entry(path: Path) -> MediaEntry | None:
         media_type = "tv"
 
     season = info.get("season")
+    if isinstance(season, list):
+        season = season[0]
+
     episode = info.get("episode")
     if isinstance(episode, list):
         episode = episode[0]
