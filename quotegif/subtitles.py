@@ -9,6 +9,14 @@ from quotegif.models import SubCue
 
 _SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt"}
 
+# Bitmap subtitle codecs cannot be converted to searchable text.
+_BITMAP_SUB_CODECS = frozenset({
+    "hdmv_pgs_subtitle",
+    "dvd_subtitle",
+    "dvb_subtitle",
+    "xsub",
+})
+
 
 def _find_sidecar(media_path: Path) -> Path | None:
     """Look for a subtitle file adjacent to the media file."""
@@ -18,20 +26,19 @@ def _find_sidecar(media_path: Path) -> Path | None:
         candidate = parent / f"{stem}{ext}"
         if candidate.exists():
             return candidate
-        # language-tagged variants, e.g. Show.S01E01.en.srt
         for lang_file in parent.glob(f"{stem}.*.{ext.lstrip('.')}"):
             return lang_file
     return None
 
 
-def _ffprobe_subtitle_streams(media_path: Path) -> list[int]:
-    """Return stream indices of subtitle tracks in the file."""
+def _ffprobe_subtitle_streams(media_path: Path) -> list[tuple[int, str]]:
+    """Return (stream_index, codec_name) for each subtitle stream."""
     try:
         result = subprocess.run(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "s",
-                "-show_entries", "stream=index",
+                "-show_entries", "stream=index,codec_name",
                 "-of", "csv=p=0",
                 str(media_path),
             ],
@@ -39,15 +46,38 @@ def _ffprobe_subtitle_streams(media_path: Path) -> list[int]:
             text=True,
             timeout=15,
         )
-        indices = [int(x) for x in result.stdout.strip().splitlines() if x.strip().isdigit()]
-        return indices
+        streams: list[tuple[int, str]] = []
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if len(parts) != 2:
+                continue
+            idx_s, codec = parts[0].strip(), parts[1].strip().lower()
+            if idx_s.isdigit():
+                streams.append((int(idx_s), codec))
+        return streams
     except Exception:
         return []
 
 
-def _extract_embedded_srt(media_path: Path, stream_index: int) -> Path | None:
-    """Extract a subtitle stream to a temporary .srt file."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".srt", delete=False)
+def _text_subtitle_streams(media_path: Path) -> list[tuple[int, str]]:
+    """Subtitle streams that can be extracted as text (skip PGS/bitmap)."""
+    return [
+        (idx, codec) for idx, codec in _ffprobe_subtitle_streams(media_path)
+        if codec not in _BITMAP_SUB_CODECS
+    ]
+
+
+def _extract_embedded_subs(
+    media_path: Path,
+    stream_index: int,
+    codec_name: str,
+) -> Path | None:
+    """Extract a text subtitle stream to a temporary file."""
+    suffix = ".ass" if "ass" in codec_name else ".srt"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     tmp.close()
     out_path = Path(tmp.name)
     try:
@@ -78,8 +108,8 @@ def _parse_srt(path: Path) -> list[SubCue]:
     text = path.read_text(encoding="utf-8", errors="replace")
     cues: list[SubCue] = []
     for sub in srt.parse(text):
-        clean = re.sub(r"<[^>]+>", " ", sub.content)  # strip HTML tags
-        clean = re.sub(r"\{[^}]+\}", " ", clean)       # strip ASS tags
+        clean = re.sub(r"<[^>]+>", " ", sub.content)
+        clean = re.sub(r"\{[^}]+\}", " ", clean)
         clean = re.sub(r"\s+", " ", clean).strip()
         if not clean:
             continue
@@ -141,6 +171,13 @@ def _parse_ass(path: Path) -> list[SubCue]:
     return cues
 
 
+def _parse_subtitle_file(path: Path) -> list[SubCue]:
+    ext = path.suffix.lower()
+    if ext in (".ass", ".ssa"):
+        return _parse_ass(path)
+    return _parse_srt(path)
+
+
 def get_cue_source(media_path: Path) -> str:
     """Describe where subtitles would be loaded from (for verbose logging)."""
     sidecar = _find_sidecar(media_path)
@@ -148,33 +185,34 @@ def get_cue_source(media_path: Path) -> str:
         return f"sidecar {sidecar.name}"
 
     streams = _ffprobe_subtitle_streams(media_path)
-    if streams:
-        return f"embedded stream index {streams[0]}"
+    if not streams:
+        return "none"
 
-    return "none"
+    text_streams = _text_subtitle_streams(media_path)
+    if text_streams:
+        idx, codec = text_streams[0]
+        return f"embedded stream {idx} ({codec})"
+
+    idx, codec = streams[0]
+    return f"embedded stream {idx} ({codec}, bitmap — not searchable)"
 
 
 def get_cues(media_path: Path) -> list[SubCue]:
     """
     Load subtitle cues for a media file.
-    Tries: sidecar file -> embedded subtitle stream.
-    Returns empty list if no subtitles found.
+    Tries: sidecar file -> embedded text subtitle streams (skips PGS/bitmap).
+    Returns empty list if no searchable subtitles found.
     """
     sidecar = _find_sidecar(media_path)
-    sub_path: Path | None = sidecar
+    if sidecar is not None:
+        return _parse_subtitle_file(sidecar)
 
-    if sub_path is None:
-        streams = _ffprobe_subtitle_streams(media_path)
-        for stream_idx in streams:
-            extracted = _extract_embedded_srt(media_path, stream_idx)
-            if extracted:
-                sub_path = extracted
-                break
+    for stream_idx, codec in _text_subtitle_streams(media_path):
+        extracted = _extract_embedded_subs(media_path, stream_idx, codec)
+        if not extracted:
+            continue
+        cues = _parse_subtitle_file(extracted)
+        if cues:
+            return cues
 
-    if sub_path is None:
-        return []
-
-    ext = sub_path.suffix.lower()
-    if ext in (".ass", ".ssa"):
-        return _parse_ass(sub_path)
-    return _parse_srt(sub_path)
+    return []
