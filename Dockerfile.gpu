@@ -2,7 +2,7 @@
 # Use with: ./qg-gpu  or  docker compose --profile gpu run --rm quotegif-gpu
 FROM nvidia/cuda:12.6.2-cudnn-runtime-ubuntu24.04
 
-# cuBLAS must be on LD_LIBRARY_PATH for ctranslate2 at inference time (not just model load).
+# cuBLAS ships in the CUDA runtime base image — set paths so ctranslate2 finds it at inference.
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
@@ -11,15 +11,14 @@ RUN apt-get update \
         python3 \
         python3-pip \
         ffmpeg \
-        cuda-cublas-12-6 \
-        cuda-cudart-12-6 \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 
-# Fail early if the image is missing cuBLAS (wrong base or incomplete CUDA install).
+# Fail the build early if cuBLAS is missing from the base image.
 RUN test -e /usr/local/cuda/lib64/libcublas.so.12 \
-    || test -e /usr/lib/x86_64-linux-gnu/libcublas.so.12
+    || test -e /usr/lib/x86_64-linux-gnu/libcublas.so.12 \
+    || (echo "ERROR: libcublas.so.12 not found in CUDA runtime image" && exit 1)
 
 WORKDIR /app
 
