@@ -93,14 +93,15 @@ def find(
 
     # Step 1: Identify the source
     ref: EpisodeRef
-    if episode:
+    if episode or (show and movie):
         ref = _resolve_ref_from_hints(
             quote=quote,
             show=show,
             episode=episode,
             movie=movie,
         )
-        console.print(f"[dim]Using provided episode:[/dim] {ref.display()}")
+        label = "movie" if movie and not episode else "episode"
+        console.print(f"[dim]Using provided {label}:[/dim] {ref.display()}")
     else:
         provider_name = provider or cfg.provider.name
         from quotegif.providers.registry import get_active_model
@@ -681,9 +682,17 @@ def _resolve_ref_from_hints(
     movie: bool = False,
 ) -> EpisodeRef:
     """Build an EpisodeRef from --show / --episode without calling the LLM."""
-    if not episode:
-        raise ValueError("--episode is required when skipping LLM identification")
-    return _parse_episode_string(episode, quote, show_override=show, movie=movie)
+    if episode:
+        return _parse_episode_string(episode, quote, show_override=show, movie=movie)
+    if show and movie:
+        return EpisodeRef(
+            title=show.strip(),
+            media_type="movie",
+            exact_quote=quote,
+            confidence=1.0,
+            reasoning="Provided via --show --movie",
+        )
+    raise ValueError("--episode or --show with --movie is required when skipping LLM identification")
 
 
 def _media_select_status(ref: EpisodeRef, candidate_count: int) -> str:
