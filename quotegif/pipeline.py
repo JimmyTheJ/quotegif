@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from quotegif import timing as t
 from quotegif import verbose as v
 from quotegif.config import AppConfig
 from quotegif.matcher import (
@@ -88,7 +89,8 @@ def locate_quote(
         v.log(f"File: {media_path}")
         v.log(f"Search queries: {queries!r}")
 
-    subtitle_cues = get_cues(media_path)
+    with t.track_step("Load subtitles"):
+        subtitle_cues = get_cues(media_path)
     transcript_source = "subtitles" if subtitle_cues else "none"
     cue_source = get_cue_source(media_path)
 
@@ -104,9 +106,10 @@ def locate_quote(
     for q in queries:
         if not subtitle_cues:
             break
-        _log_match_rankings(q, subtitle_cues, label="Subtitles")
-        cue = match_quote(q, subtitle_cues)
-        score, _ = best_quote_score(q, subtitle_cues)
+        with t.track_step("Match quote (subtitles)", detail=cue_source):
+            _log_match_rankings(q, subtitle_cues, label="Subtitles")
+            cue = match_quote(q, subtitle_cues)
+            score, _ = best_quote_score(q, subtitle_cues)
         if cue is not None:
             best_cue = cue
             match_query = q
@@ -121,16 +124,19 @@ def locate_quote(
             v.log("No subtitle match — falling back to Whisper (full episode)")
         from quotegif.transcribe import transcribe
 
-        whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
+        whisper_detail = f"{cfg.whisper.model} / {cfg.whisper.device}"
+        with t.track_step("Whisper transcription", detail=whisper_detail):
+            whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
         subtitle_cues = whisper_cues
         transcript_source = f"whisper ({cfg.whisper.model})"
         if v.is_verbose():
             v.log(f"Whisper produced {len(whisper_cues)} segments")
 
         for q in queries:
-            _log_match_rankings(q, whisper_cues, label="Whisper")
-            cue = match_quote(q, whisper_cues)
-            score, _ = best_quote_score(q, whisper_cues)
+            with t.track_step("Match quote (Whisper)"):
+                _log_match_rankings(q, whisper_cues, label="Whisper")
+                cue = match_quote(q, whisper_cues)
+                score, _ = best_quote_score(q, whisper_cues)
             if cue is not None:
                 best_cue = cue
                 match_query = q

@@ -16,6 +16,7 @@ from rich.table import Table
 from quotegif.config import AppConfig, check_ffmpeg, load_config
 from quotegif.models import EpisodeRef
 from quotegif.pipeline import OutputFormat, locate_quote, render_output
+from quotegif import timing as t
 from quotegif import verbose as v
 
 app = typer.Typer(
@@ -84,6 +85,8 @@ def find(
 ) -> None:
     """Find a quote in your media library and render a clip or subtitled GIF."""
     v.set_verbose(verbose)
+    timer = t.RunTimer()
+    t.set_active_timer(timer)
     _require_ffmpeg()
     cfg = _load_cfg(config_path)
 
@@ -110,13 +113,14 @@ def find(
     resolved_pick_reason: str | None = None
 
     if episode or (show and movie):
-        ref = _resolve_ref_from_hints(
-            quote=quote,
-            show=show,
-            episode=episode,
-            movie=movie,
-        )
-        llm_candidates = [ref]
+        with timer.track("Use provided episode/movie"):
+            ref = _resolve_ref_from_hints(
+                quote=quote,
+                show=show,
+                episode=episode,
+                movie=movie,
+            )
+            llm_candidates = [ref]
         label = "movie" if movie and not episode else "episode"
         console.print(f"[dim]Using provided {label}:[/dim] {ref.display()}")
     else:
@@ -141,15 +145,16 @@ def find(
                 else "Asking LLM (with web search)…"
             )
             with console.status(status):
-                llm_candidates = identify_quote_candidates(
-                    quote,
-                    cfg,
-                    provider_override=provider,
-                    model_override=model,
-                    show_hint=show,
-                    movie=movie,
-                    max_candidates=candidates,
-                )
+                with timer.track("LLM identification", detail=f"{provider_name} / {model_label}"):
+                    llm_candidates = identify_quote_candidates(
+                        quote,
+                        cfg,
+                        provider_override=provider,
+                        model_override=model,
+                        show_hint=show,
+                        movie=movie,
+                        max_candidates=candidates,
+                    )
         except Exception as e:
             err_console.print(f"[red]Identification failed:[/red] {e}")
             raise typer.Exit(1)
@@ -181,7 +186,8 @@ def find(
     from quotegif.library import find_media, get_index
 
     with console.status("Loading library index…"):
-        entries = get_index(cfg)
+        with timer.track("Load library index"):
+            entries = get_index(cfg)
 
     if not (episode or (show and movie)) and llm_candidates:
         from quotegif.episode_resolve import resolve_episode
@@ -192,12 +198,13 @@ def find(
             else "Verifying LLM picks against subtitles…"
         )
         with console.status(verify_status):
-            resolved = resolve_episode(
-                llm_candidates,
-                quote,
-                entries,
-                show=show,
-            )
+            with timer.track("Episode verification"):
+                resolved = resolve_episode(
+                    llm_candidates,
+                    quote,
+                    entries,
+                    show=show,
+                )
         if resolved is not None:
             ref = resolved.ref
             resolved_media_path = resolved.media_path
@@ -232,7 +239,8 @@ def find(
         try:
             status = _media_select_status(ref, len(matches))
             with console.status(status):
-                media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
+                with timer.track("Select media file"):
+                    media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
         except LookupError as e:
             err_console.print(f"[red]{e}[/red]")
             if len(matches) > 1 and not yes:
@@ -245,7 +253,8 @@ def find(
 
     try:
         with console.status("Locating quote in file…"):
-            locate = locate_quote(ref, quote, cfg, media_path)
+            with timer.track("Locate quote in file"):
+                locate = locate_quote(ref, quote, cfg, media_path)
     except LookupError as e:
         err_console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
@@ -260,12 +269,14 @@ def find(
 
     try:
         with console.status("Running ffmpeg…"):
-            out_path = _render_and_report(locate, cfg, ref.display(), output_format)
+            with timer.track("Render output", detail=output_format):
+                out_path = _render_and_report(locate, cfg, ref.display(), output_format)
     except RuntimeError as e:
         err_console.print(f"[red]Render failed:[/red] {e}")
         raise typer.Exit(1)
 
     console.print(Panel(f"[bold green]Done![/bold green] {out_path}", expand=False))
+    _show_step_timings(timer)
 
     if open_output:
         _open_file(out_path)
@@ -714,6 +725,25 @@ def _provider_has_key(cfg: AppConfig, name: str) -> bool:
     if name == "ollama":
         return True  # local, no key needed
     return False
+
+
+def _show_step_timings(timer: t.RunTimer) -> None:
+    if not timer.steps:
+        return
+    table = Table(title="Timing", show_header=True, header_style="bold")
+    table.add_column("Step")
+    table.add_column("Detail", overflow="fold")
+    table.add_column("Duration", justify="right")
+
+    for step in timer.steps:
+        table.add_row(
+            step.name,
+            step.detail or "—",
+            t.format_duration(step.seconds),
+        )
+    table.add_row("", "", "")
+    table.add_row("[bold]Total[/bold]", "", f"[bold]{t.format_duration(timer.total_seconds)}[/bold]")
+    console.print(table)
 
 
 def _log_library_matches(ref: EpisodeRef, entries) -> None:
