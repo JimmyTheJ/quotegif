@@ -51,7 +51,18 @@ def find(
     width: Annotated[int, typer.Option("--width", help="GIF pixel width")] = -1,
     provider: Annotated[Optional[str], typer.Option("--provider", help="LLM provider: openai | anthropic | ollama")] = None,
     model: Annotated[Optional[str], typer.Option("--model", help="Override the model used by the provider (e.g. gpt-4o-mini, llama3.2)")] = None,
-    episode: Annotated[Optional[str], typer.Option("--episode", help='Skip LLM, specify episode directly e.g. "The Office S03E14"')] = None,
+    show: Annotated[Optional[str], typer.Option(
+        "--show",
+        help='Known show or movie title, e.g. "Star Trek DS9" or "The Office" (skips LLM show detection)',
+    )] = None,
+    episode: Annotated[Optional[str], typer.Option(
+        "--episode",
+        help='Known episode: full "The Office S03E14", or with --show just "S03E14"',
+    )] = None,
+    movie: Annotated[bool, typer.Option(
+        "--movie",
+        help="Treat --show as a movie (one file), not a TV series with multiple episodes",
+    )] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm low-confidence and ambiguous matches")] = False,
     output_format: Annotated[OutputFormat, typer.Option(
         "--format",
@@ -82,9 +93,14 @@ def find(
 
     # Step 1: Identify the source
     ref: EpisodeRef
-    if episode:
-        ref = _parse_episode_string(episode, quote)
-        console.print(f"[dim]Using provided episode:[/dim] {ref.display()}")
+    if episode or show:
+        ref = _resolve_ref_from_hints(
+            quote=quote,
+            show=show,
+            episode=episode,
+            movie=movie,
+        )
+        console.print(f"[dim]Using provided source:[/dim] {ref.display()}")
     else:
         provider_name = provider or cfg.provider.name
         from quotegif.providers.registry import get_active_model
@@ -630,10 +646,39 @@ def _pick_file(matches) -> Path:
     return matches[int(choice) - 1].path
 
 
-def _parse_episode_string(text: str, fallback_quote: str) -> EpisodeRef:
+def _resolve_ref_from_hints(
+    quote: str,
+    show: str | None,
+    episode: str | None,
+    movie: bool = False,
+) -> EpisodeRef:
+    """Build an EpisodeRef from --show / --episode without calling the LLM."""
+    if episode:
+        return _parse_episode_string(episode, quote, show_override=show, movie=movie)
+    if show:
+        return EpisodeRef(
+            title=show.strip(),
+            media_type="movie" if movie else "tv",
+            exact_quote=quote,
+            confidence=1.0,
+            reasoning="Provided via --show",
+        )
+    raise ValueError("Either --show or --episode is required")
+
+
+def _parse_episode_string(
+    text: str,
+    fallback_quote: str,
+    show_override: str | None = None,
+    movie: bool = False,
+) -> EpisodeRef:
     import re
-    pattern = r"^(.*?)\s+[Ss](\d+)[Ee](\d+)\s*$"
-    m = re.match(pattern, text.strip())
+
+    text = text.strip()
+
+    # "The Office S03E14"
+    pattern_full = r"^(.*?)\s+[Ss](\d+)[Ee](\d+)\s*$"
+    m = re.match(pattern_full, text)
     if m:
         return EpisodeRef(
             title=m.group(1).strip(),
@@ -642,12 +687,38 @@ def _parse_episode_string(text: str, fallback_quote: str) -> EpisodeRef:
             episode=int(m.group(3)),
             exact_quote=fallback_quote,
             confidence=1.0,
+            reasoning="Provided via --episode",
         )
+
+    # "S03E14" with --show "The Office"
+    pattern_short = r"^[Ss](\d+)[Ee](\d+)\s*$"
+    m = re.match(pattern_short, text)
+    if m and show_override:
+        return EpisodeRef(
+            title=show_override.strip(),
+            media_type="tv",
+            season=int(m.group(1)),
+            episode=int(m.group(2)),
+            exact_quote=fallback_quote,
+            confidence=1.0,
+            reasoning="Provided via --show and --episode",
+        )
+
+    if show_override:
+        return EpisodeRef(
+            title=show_override.strip(),
+            media_type="movie" if movie else "tv",
+            exact_quote=fallback_quote,
+            confidence=1.0,
+            reasoning="Provided via --show",
+        )
+
     return EpisodeRef(
-        title=text.strip(),
+        title=text,
         media_type="movie",
         exact_quote=fallback_quote,
         confidence=1.0,
+        reasoning="Provided via --episode",
     )
 
 
