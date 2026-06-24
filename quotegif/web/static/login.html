@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login — QuoteGif</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="layout auth-layout">
+    <section class="panel auth-panel">
+      <h1>QuoteGif</h1>
+      <p class="tagline">Sign in to use the web UI.</p>
+      <form id="login-form">
+        <label class="field">
+          <span>Username</span>
+          <input id="username" name="username" type="text" autocomplete="username" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div id="login-error" class="error hidden"></div>
+        <button type="submit" class="primary" id="login-btn">Sign in</button>
+      </form>
+    </section>
+  </div>
+  <script src="/login.js"></script>
+</body>
+</html>

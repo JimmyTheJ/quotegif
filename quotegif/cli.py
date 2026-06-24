@@ -81,6 +81,14 @@ def find(
         help="clip: video+audio (same codec when possible) | gif: silent GIF with burned-in subtitles",
     )] = "gif",
     open_output: Annotated[bool, typer.Option("--open", help="Open the output file after creation")] = False,
+    media_path_override: Annotated[Optional[Path], typer.Option(
+        "--media-path",
+        help="Use this video file directly (skips library file selection)",
+    )] = None,
+    print_output: Annotated[bool, typer.Option(
+        "--print-output",
+        help="Print machine-readable QUOTEGIF_OUTPUT:path on success (for scripts and the web UI)",
+    )] = False,
     verbose: Annotated[bool, typer.Option(
         "--verbose", "-v",
         help="Detailed debug output: library scores, episode verification, top quote matches",
@@ -88,6 +96,9 @@ def find(
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
 ) -> None:
     """Find a quote in your media library and render a clip or subtitled GIF."""
+    import json
+
+    noninteractive = os.environ.get("QUOTEGIF_NONINTERACTIVE", "").lower() in ("1", "true", "yes")
     v.set_verbose(verbose)
     timer = t.RunTimer()
     t.set_active_timer(timer)
@@ -184,8 +195,23 @@ def find(
                 "[dim]LLM confidence is self-reported and episode numbers are often wrong. "
                 "Subtitle verification will be used when possible.[/dim]"
             )
-            if not yes and not Confirm.ask("Proceed anyway?", default=False):
-                raise typer.Exit(0)
+            if not yes:
+                if noninteractive:
+                    payload = {
+                        "kind": "low_confidence",
+                        "message": (
+                            f"Low confidence ({ref.confidence:.0%}) on top guess: {ref.reasoning}"
+                        ),
+                        "ref": {
+                            "display": ref.display(),
+                            "confidence": ref.confidence,
+                            "reasoning": ref.reasoning,
+                        },
+                    }
+                    print("QUOTEGIF_NEEDS_INPUT:" + json.dumps(payload))
+                    raise typer.Exit(2)
+                if not Confirm.ask("Proceed anyway?", default=False):
+                    raise typer.Exit(0)
 
     # Step 2: Find the local file
     console.print(f"[bold cyan]Searching library[/bold cyan] for: {ref.display()}")
@@ -195,7 +221,14 @@ def find(
         with timer.track("Load library index"):
             entries = get_index(cfg)
 
-    if not (episode or (show and movie)) and llm_candidates:
+    if media_path_override is not None:
+        if not media_path_override.exists():
+            err_console.print(f"[red]File not found:[/red] {media_path_override}")
+            raise typer.Exit(1)
+        media_path = media_path_override
+        pick_reason = "explicit --media-path"
+        console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
+    elif not (episode or (show and movie)) and llm_candidates:
         from quotegif.episode_resolve import resolve_episode
 
         verify_status = (
@@ -226,36 +259,58 @@ def find(
                 '[bold]--episode "SxxExx"[/bold] if wrong.'
             )
 
-    if resolved_media_path is not None:
-        media_path = resolved_media_path
-        pick_reason = resolved_pick_reason or "subtitle resolved"
-        console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
-    else:
-        matches = find_media(ref, entries)
-        _log_library_matches(ref, entries)
-        if not matches:
-            err_console.print(
-                f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
-                "Run [bold]quotegif index[/bold] to rebuild the index."
-            )
-            raise typer.Exit(1)
-
-        from quotegif.media_select import select_media_file
-
-        try:
-            status = _media_select_status(ref, len(matches))
-            with console.status(status):
-                with timer.track("Select media file"):
-                    media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
-        except LookupError as e:
-            err_console.print(f"[red]{e}[/red]")
-            if len(matches) > 1 and not yes:
-                console.print("[yellow]Candidates from library index:[/yellow]")
-                media_path = _pick_file(matches)
-            else:
-                raise typer.Exit(1)
-        else:
+    if media_path_override is None:
+        if resolved_media_path is not None:
+            media_path = resolved_media_path
+            pick_reason = resolved_pick_reason or "subtitle resolved"
             console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
+        else:
+            matches = find_media(ref, entries)
+            _log_library_matches(ref, entries)
+            if not matches:
+                err_console.print(
+                    f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
+                    "Run [bold]quotegif index[/bold] to rebuild the index."
+                )
+                raise typer.Exit(1)
+
+            from quotegif.media_select import select_media_file
+
+            try:
+                status = _media_select_status(ref, len(matches))
+                with console.status(status):
+                    with timer.track("Select media file"):
+                        media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
+            except LookupError as e:
+                err_console.print(f"[red]{e}[/red]")
+                if len(matches) > 1 and not yes:
+                    if noninteractive:
+                        payload = {
+                            "kind": "file_pick",
+                            "message": str(e),
+                            "file_candidates": [
+                                {
+                                    "path": str(m.path),
+                                    "label": (
+                                        f"S{m.season:02d}E{m.episode:02d}"
+                                        if m.season and m.episode
+                                        else m.path.name
+                                    ),
+                                    "title": m.title,
+                                    "season": m.season,
+                                    "episode": m.episode,
+                                }
+                                for m in matches[:20]
+                            ],
+                        }
+                        print("QUOTEGIF_NEEDS_INPUT:" + json.dumps(payload))
+                        raise typer.Exit(2)
+                    console.print("[yellow]Candidates from library index:[/yellow]")
+                    media_path = _pick_file(matches)
+                else:
+                    raise typer.Exit(1)
+            else:
+                console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
 
     time_hint = around_seconds if around_seconds is not None else ref.approx_timestamp
     if time_hint is not None:
@@ -297,6 +352,9 @@ def find(
 
     console.print(Panel(f"[bold green]Done![/bold green] {out_path}", expand=False))
     _show_step_timings(timer)
+
+    if print_output:
+        print(f"QUOTEGIF_OUTPUT:{out_path}")
 
     if open_output:
         _open_file(out_path)

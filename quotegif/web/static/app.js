@@ -2,6 +2,9 @@ const $ = (id) => document.getElementById(id);
 
 let currentJobId = null;
 let pollTimer = null;
+let currentUser = null;
+
+const fetchOpts = { credentials: "same-origin" };
 
 function formatDuration(seconds) {
   if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
@@ -17,6 +20,7 @@ function hideAllResultStates() {
   $("error").classList.add("hidden");
   $("result").classList.add("hidden");
   $("idle-hint").classList.add("hidden");
+  $("log-tail").classList.add("hidden");
 }
 
 function showIdle() {
@@ -28,6 +32,18 @@ function setLoading(active) {
   $("submit-btn").disabled = active;
 }
 
+async function requireAuth() {
+  const res = await fetch("/api/auth/me", fetchOpts);
+  if (!res.ok) {
+    window.location.href = "/login.html";
+    return false;
+  }
+  const data = await res.json();
+  currentUser = data.username;
+  $("user-label").textContent = data.username;
+  return true;
+}
+
 function buildPayload() {
   const payload = {
     quote: $("quote").value.trim(),
@@ -37,6 +53,7 @@ function buildPayload() {
     output_format: $("output_format").value,
     candidates: parseInt($("candidates").value, 10) || 5,
     auto_confirm: $("auto_confirm").checked,
+    verbose: $("verbose").checked,
   };
 
   const padBefore = $("pad_before").value;
@@ -46,6 +63,7 @@ function buildPayload() {
   const around = $("around").value.trim();
   const provider = $("provider").value;
   const model = $("model").value.trim();
+  const configPath = $("config_path").value.trim();
 
   if (padBefore !== "") payload.pad_before = parseFloat(padBefore);
   if (padAfter !== "") payload.pad_after = parseFloat(padAfter);
@@ -54,6 +72,7 @@ function buildPayload() {
   if (around) payload.around = around;
   if (provider) payload.provider = provider;
   if (model) payload.model = model;
+  if (configPath) payload.config_path = configPath;
 
   return payload;
 }
@@ -61,7 +80,11 @@ function buildPayload() {
 async function loadConfig() {
   const pill = $("status-pill");
   try {
-    const res = await fetch("/api/config");
+    const res = await fetch("/api/config", fetchOpts);
+    if (res.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
     const cfg = await res.json();
 
     $("pad_before").placeholder = String(cfg.pad_before);
@@ -112,14 +135,20 @@ async function startFind(payload) {
   setLoading(true);
   hideAllResultStates();
   $("progress").classList.remove("hidden");
-  $("progress-step").textContent = "Queued…";
+  $("progress-step").textContent = "Starting CLI…";
   $("progress-detail").textContent = "";
 
   const res = await fetch("/api/find", {
     method: "POST",
+    ...fetchOpts,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -128,6 +157,9 @@ async function startFind(payload) {
 
   const job = await res.json();
   currentJobId = job.id;
+  if (job.cli_command) {
+    $("progress-detail").textContent = job.cli_command;
+  }
   pollJob(job.id);
 }
 
@@ -138,6 +170,7 @@ async function continueJob(body) {
 
   const res = await fetch(`/api/jobs/${currentJobId}/continue`, {
     method: "POST",
+    ...fetchOpts,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -155,7 +188,7 @@ function pollJob(jobId) {
 
   const tick = async () => {
     try {
-      const res = await fetch(`/api/jobs/${jobId}`);
+      const res = await fetch(`/api/jobs/${jobId}`, fetchOpts);
       if (!res.ok) throw new Error("Job not found");
       const job = await res.json();
       handleJobUpdate(job);
@@ -173,7 +206,12 @@ function pollJob(jobId) {
 function handleJobUpdate(job) {
   if (job.status === "queued" || job.status === "running") {
     $("progress-step").textContent = job.progress_step || job.status;
-    $("progress-detail").textContent = job.progress_detail || "";
+    const detail = job.cli_command || job.progress_detail || "";
+    $("progress-detail").textContent = detail;
+    if (job.log_tail?.length) {
+      $("log-tail").classList.remove("hidden");
+      $("log-tail").textContent = job.log_tail.slice(-8).join("\n");
+    }
     return;
   }
 
@@ -188,6 +226,10 @@ function handleJobUpdate(job) {
 
   if (job.status === "failed") {
     showError(job.error || "Job failed");
+    if (job.log_tail?.length) {
+      $("log-tail").classList.remove("hidden");
+      $("log-tail").textContent = job.log_tail.join("\n");
+    }
     return;
   }
 
@@ -217,7 +259,7 @@ function showInputPrompt(job) {
   if (kind === "low_confidence") {
     const btn = document.createElement("button");
     btn.className = "primary";
-    btn.textContent = "Proceed anyway";
+    btn.textContent = "Proceed anyway (--yes)";
     btn.onclick = () => continueJob({ auto_confirm: true });
     wrap.appendChild(btn);
     return;
@@ -231,7 +273,7 @@ function showInputPrompt(job) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = `${c.label} — ${c.path}`;
-      btn.onclick = () => continueJob({ media_path: c.path });
+      btn.onclick = () => continueJob({ media_path: c.path, auto_confirm: true });
       li.appendChild(btn);
       ul.appendChild(li);
     });
@@ -244,16 +286,10 @@ function showResult(result) {
   $("result").classList.remove("hidden");
 
   const meta = $("meta");
-  const matched = result.matched;
   meta.innerHTML = `
-    <div><strong>${escapeHtml(result.ref.display)}</strong></div>
-    <div>${escapeHtml(result.pick_reason)}</div>
-    ${
-      matched
-        ? `<div>Matched at <strong>${matched.start.toFixed(1)}s</strong>: “${escapeHtml(matched.text)}”</div>`
-        : ""
-    }
-    <div>Total: ${formatDuration(result.total_seconds)}</div>
+    <div><strong>Output</strong></div>
+    <div>${escapeHtml(result.output_path || "")}</div>
+    <div>Format: ${escapeHtml(result.output_format || "")}</div>
   `;
 
   const preview = $("preview");
@@ -273,20 +309,7 @@ function showResult(result) {
     preview.appendChild(img);
   }
 
-  const dl = $("download-btn");
-  dl.href = result.download_url || `${url}?download=1`;
-
-  const tbody = $("timings-table").querySelector("tbody");
-  tbody.innerHTML = "";
-  for (const step of result.timings || []) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(step.name)}</td>
-      <td>${escapeHtml(step.detail || "—")}</td>
-      <td>${formatDuration(step.seconds)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
+  $("download-btn").href = result.download_url || `${url}?download=1`;
 }
 
 function escapeHtml(text) {
@@ -305,8 +328,17 @@ $("find-form").addEventListener("submit", async (e) => {
   }
 });
 
+$("logout-btn").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST", ...fetchOpts });
+  window.location.href = "/login.html";
+});
+
 $("output_format").addEventListener("change", updateGifFields);
 
-loadConfig();
-updateGifFields();
-showIdle();
+(async () => {
+  if (await requireAuth()) {
+    await loadConfig();
+    updateGifFields();
+    showIdle();
+  }
+})();

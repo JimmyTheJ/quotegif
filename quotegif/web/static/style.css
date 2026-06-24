@@ -40,6 +40,57 @@ body {
   margin-bottom: 1.5rem;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.user-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.ghost-btn:hover { border-color: var(--accent); }
+
+.auth-layout {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-panel {
+  width: min(420px, 100%);
+}
+
+.log-tail {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  overflow-x: auto;
+  max-height: 200px;
+  margin-bottom: 1rem;
+  white-space: pre-wrap;
+  color: var(--muted);
+}
+
 h1 {
   margin: 0;
   font-size: 1.75rem;

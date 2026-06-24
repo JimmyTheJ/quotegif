@@ -306,7 +306,7 @@ All settings can be configured via environment variables or a `.env` file. Copy 
 
 ## Web UI
 
-The CLI remains the primary interface. A browser UI exposes the same **find** workflow (quote search, show/episode hints, pad before/after, output format, Whisper time hints, provider selection, etc.).
+The CLI remains the primary interface. The browser UI runs **`quotegif find`** as a subprocess with the same flags (quote, `--show`, `--episode`, `--pad-before`, `--pad-after`, `--format`, `--around`, `--yes`, `-v`, etc.).
 
 ### Install
 
@@ -316,6 +316,31 @@ pip install "quotegif[web]"
 pip install "quotegif[all]"
 ```
 
+### Authentication
+
+Create a user (stored in SQLite, default `~/.config/quotegif/web.db`):
+
+```bash
+quotegif-web-create-user jamus
+```
+
+Or bootstrap the first user from the environment on startup:
+
+```dotenv
+QUOTEGIF_WEB_USERNAME=jamus
+QUOTEGIF_WEB_PASSWORD=your-secure-password
+QUOTEGIF_WEB_SECRET=long-random-string-for-session-cookies
+```
+
+Brute-force protection: **5 failed logins per username** (15-minute lockout) and **30 failed logins per IP** per hour.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `QUOTEGIF_WEB_DB` | `~/.config/quotegif/web.db` | SQLite database path |
+| `QUOTEGIF_WEB_SECRET` | ephemeral (dev) | Session cookie signing key |
+| `QUOTEGIF_WEB_HOST` | `127.0.0.1` | Bind address |
+| `QUOTEGIF_WEB_PORT` | `8765` | Port |
+
 ### Run
 
 ```bash
@@ -324,9 +349,9 @@ quotegif-web
 python -m quotegif.web
 ```
 
-Open **http://127.0.0.1:8765** (override with `QUOTEGIF_WEB_HOST` / `QUOTEGIF_WEB_PORT`).
+Open **http://127.0.0.1:8765** — sign in, then use the find form.
 
-Jobs run in the background — the UI polls for progress, shows inline preview (GIF or video clip), and offers a download link. If the workflow needs confirmation (low LLM confidence or ambiguous library files), the UI prompts you to continue, same as interactive CLI prompts.
+Jobs run the CLI in the background (`QUOTEGIF_NONINTERACTIVE=1`). The UI shows the exact command, tails CLI output, previews GIF/clip output inline, and offers download. If the CLI needs confirmation (low LLM confidence or ambiguous files), the UI prompts you — same as interactive CLI, via `QUOTEGIF_NEEDS_INPUT` markers.
 
 Uses the same config, media index, and output folder as the CLI.
 

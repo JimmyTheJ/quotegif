@@ -13,7 +13,11 @@
         <h1>QuoteGif</h1>
         <p class="tagline">Find a quote in your library and render a clip or GIF.</p>
       </div>
-      <div id="status-pill" class="status-pill" data-state="loading">Checking…</div>
+      <div class="header-actions">
+        <span id="user-label" class="user-label"></span>
+        <button type="button" id="logout-btn" class="ghost-btn">Log out</button>
+        <div id="status-pill" class="status-pill" data-state="loading">Checking…</div>
+      </div>
     </header>
 
     <main class="grid">
@@ -99,7 +103,15 @@
               </label>
               <label class="checkbox">
                 <input id="auto_confirm" type="checkbox" />
-                <span>Auto-confirm low confidence &amp; ambiguous files (like <code>--yes</code>)</span>
+                <span>Auto-confirm low confidence &amp; ambiguous files (<code>--yes</code>)</span>
+              </label>
+              <label class="checkbox">
+                <input id="verbose" type="checkbox" />
+                <span>Verbose CLI output (<code>-v</code>)</span>
+              </label>
+              <label class="field">
+                <span>Config path <small>(optional)</small></span>
+                <input id="config_path" type="text" placeholder="~/.config/quotegif/config.toml" />
               </label>
             </div>
           </details>
@@ -120,6 +132,7 @@
 
         <div id="input-prompt" class="input-prompt hidden"></div>
         <div id="error" class="error hidden"></div>
+        <pre id="log-tail" class="log-tail hidden"></pre>
 
         <div id="result" class="result hidden">
           <div id="meta" class="meta"></div>
@@ -127,7 +140,7 @@
           <div class="actions">
             <a id="download-btn" class="button" href="#" download>Download</a>
           </div>
-          <details id="timings-wrap" class="timings">
+          <details id="timings-wrap" class="timings hidden">
             <summary>Timing</summary>
             <table id="timings-table">
               <thead><tr><th>Step</th><th>Detail</th><th>Duration</th></tr></thead>
