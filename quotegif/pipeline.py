@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from quotegif import verbose as v
 from quotegif.config import AppConfig
+from quotegif.matcher import _DEFAULT_THRESHOLD, best_quote_score, match_quote, top_quote_matches
 from quotegif.models import ClipSpec, EpisodeRef, SubCue
+from quotegif.subtitles import get_cue_source, get_cues
 
 OutputFormat = Literal["clip", "gif"]
 
@@ -18,6 +21,37 @@ class LocateResult:
     spec: ClipSpec
     matched_cue: SubCue
     subtitle_cues: list[SubCue]  # full-file cues (for GIF burn-in)
+    match_score: float | None = None
+    match_query: str | None = None
+    transcript_source: str | None = None  # subtitles | whisper
+    runner_up_score: float | None = None
+
+
+def _log_match_rankings(query: str, cues: list[SubCue], *, label: str) -> None:
+    if not v.is_verbose():
+        return
+    v.log(
+        f"{label} — top fuzzy matches for [italic]{query!r}[/italic] "
+        f"(threshold {_DEFAULT_THRESHOLD:.0f}):"
+    )
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("#", justify="right", width=3)
+    table.add_column("Score", justify="right", width=6)
+    table.add_column("Time", width=16)
+    table.add_column("Cue text", overflow="fold")
+
+    for i, (score, cue) in enumerate(top_quote_matches(query, cues, top_n=10), 1):
+        ok = score >= _DEFAULT_THRESHOLD
+        score_style = "green" if ok and i == 1 else "yellow" if ok else "red"
+        table.add_row(
+            str(i),
+            f"[{score_style}]{score:.0f}[/{score_style}]",
+            f"{cue.start:.1f}s – {cue.end:.1f}s",
+            cue.text[:120] + ("…" if len(cue.text) > 120 else ""),
+        )
+    v.log_table(table)
 
 
 def locate_quote(
@@ -30,10 +64,6 @@ def locate_quote(
     Find the quote timestamp in media_path using subtitles (Whisper fallback).
     Returns clip spec plus full subtitle track for rendering.
     """
-    from quotegif.matcher import match_quote, best_quote_score
-    from quotegif.subtitles import get_cues
-
-    search_query = ref.exact_quote or quote
     queries: list[str] = []
     seen: set[str] = set()
     for q in [quote, ref.exact_quote]:
@@ -41,30 +71,61 @@ def locate_quote(
             seen.add(q.strip().lower())
             queries.append(q)
 
+    if v.is_verbose():
+        v.section("Quote location")
+        v.log(f"File: {media_path}")
+        v.log(f"Search queries: {queries!r}")
+
     subtitle_cues = get_cues(media_path)
-    best_cue = None
-    best_score = 0.0
+    transcript_source = "subtitles" if subtitle_cues else "none"
+    cue_source = get_cue_source(media_path)
+
+    if v.is_verbose():
+        v.log(f"Subtitle source: {cue_source}")
+        v.log(f"Loaded {len(subtitle_cues)} subtitle cues")
+
+    best_cue: SubCue | None = None
+    match_query: str | None = None
+    match_score: float | None = None
+    runner_up_score: float | None = None
+
     for q in queries:
-        if subtitle_cues:
-            cue = match_quote(q, subtitle_cues)
-            if cue is not None:
-                best_cue = cue
-                search_query = q
-                break
-            score, _ = best_quote_score(q, subtitle_cues)
-            if score > best_score:
-                best_score = score
+        if not subtitle_cues:
+            break
+        _log_match_rankings(q, subtitle_cues, label="Subtitles")
+        cue = match_quote(q, subtitle_cues)
+        score, _ = best_quote_score(q, subtitle_cues)
+        if cue is not None:
+            best_cue = cue
+            match_query = q
+            match_score = score
+            tops = top_quote_matches(q, subtitle_cues, top_n=2)
+            if len(tops) > 1:
+                runner_up_score = tops[1][0]
+            break
 
     if best_cue is None and cfg.whisper.enabled:
+        if v.is_verbose():
+            v.log("No subtitle match — falling back to Whisper (full episode)")
         from quotegif.transcribe import transcribe
 
         whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
         subtitle_cues = whisper_cues
+        transcript_source = f"whisper ({cfg.whisper.model})"
+        if v.is_verbose():
+            v.log(f"Whisper produced {len(whisper_cues)} segments")
+
         for q in queries:
+            _log_match_rankings(q, whisper_cues, label="Whisper")
             cue = match_quote(q, whisper_cues)
+            score, _ = best_quote_score(q, whisper_cues)
             if cue is not None:
                 best_cue = cue
-                search_query = q
+                match_query = q
+                match_score = score
+                tops = top_quote_matches(q, whisper_cues, top_n=2)
+                if len(tops) > 1:
+                    runner_up_score = tops[1][0]
                 break
 
     if best_cue is None:
@@ -72,6 +133,15 @@ def locate_quote(
             "Could not locate the quote in the episode. "
             "Try a more specific quote or check the episode identifier."
         )
+
+    if v.is_verbose():
+        v.log(
+            f"Selected: score {match_score:.0f} via {transcript_source} "
+            f"(query {match_query!r})"
+        )
+        if runner_up_score is not None:
+            gap = (match_score or 0) - runner_up_score
+            v.log(f"Runner-up score: {runner_up_score:.0f} (margin {gap:.0f})")
 
     spec = ClipSpec(
         media_path=media_path,
@@ -85,6 +155,10 @@ def locate_quote(
         spec=spec,
         matched_cue=best_cue,
         subtitle_cues=subtitle_cues,
+        match_score=match_score,
+        match_query=match_query,
+        transcript_source=transcript_source,
+        runner_up_score=runner_up_score,
     )
 
 

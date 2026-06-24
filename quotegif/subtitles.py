@@ -141,6 +141,19 @@ def _parse_ass(path: Path) -> list[SubCue]:
     return cues
 
 
+def get_cue_source(media_path: Path) -> str:
+    """Describe where subtitles would be loaded from (for verbose logging)."""
+    sidecar = _find_sidecar(media_path)
+    if sidecar is not None:
+        return f"sidecar {sidecar.name}"
+
+    streams = _ffprobe_subtitle_streams(media_path)
+    if streams:
+        return f"embedded stream index {streams[0]}"
+
+    return "none"
+
+
 def get_cues(media_path: Path) -> list[SubCue]:
     """
     Load subtitle cues for a media file.

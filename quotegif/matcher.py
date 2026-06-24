@@ -72,6 +72,46 @@ def match_quote(
     return None
 
 
+def top_quote_matches(
+    query: str,
+    cues: list[SubCue],
+    top_n: int = 10,
+    window: int = 3,
+) -> list[tuple[float, SubCue]]:
+    """Return the top-N (score, cue) pairs including merged multi-line windows."""
+    if not cues:
+        return []
+
+    query_norm = normalize_text(query)
+
+    def _score(text: str) -> float:
+        return max(
+            fuzz.partial_ratio(query_norm, normalize_text(text)),
+            fuzz.token_sort_ratio(query_norm, normalize_text(text)),
+        )
+
+    scored: list[tuple[float, SubCue]] = []
+
+    for cue in cues:
+        scored.append((_score(cue.text), cue))
+
+    for i in range(len(cues)):
+        for w in range(2, min(window + 1, len(cues) - i + 1)):
+            merged_text = " ".join(c.text for c in cues[i: i + w])
+            scored.append((
+                _score(merged_text),
+                SubCue(
+                    start=cues[i].start,
+                    end=cues[i + w - 1].end,
+                    text=merged_text,
+                    index=cues[i].index,
+                ),
+            ))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:top_n]
+
+
 def score_cues(
     query: str,
     cues: list[SubCue],

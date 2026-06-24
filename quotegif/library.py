@@ -196,9 +196,16 @@ def get_index(config: "AppConfig", force_rebuild: bool = False) -> list[MediaEnt
 
 
 def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
+    """Match an EpisodeRef against the library index. Returns ranked list (best first)."""
+    return [entry for _, entry in rank_media_matches(ref, entries)]
+
+
+def rank_media_matches(
+    ref: EpisodeRef,
+    entries: list[MediaEntry],
+) -> list[tuple[float, MediaEntry]]:
     """
-    Match an EpisodeRef against the library index.
-    Returns a ranked list (best first); empty if nothing found.
+    Match an EpisodeRef against the library index with scores (best first).
     """
     ref_title_norm = normalize_text(ref.title)
     ref_sig = _significant_title_tokens(ref.title)
@@ -245,4 +252,4 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
         candidates.append((score, entry))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
-    return [e for _, e in candidates]
+    return candidates

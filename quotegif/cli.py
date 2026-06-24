@@ -16,6 +16,7 @@ from rich.table import Table
 from quotegif.config import AppConfig, check_ffmpeg, load_config
 from quotegif.models import EpisodeRef
 from quotegif.pipeline import OutputFormat, locate_quote, render_output
+from quotegif import verbose as v
 
 app = typer.Typer(
     name="quotegif",
@@ -75,9 +76,14 @@ def find(
         help="clip: video+audio (same codec when possible) | gif: silent GIF with burned-in subtitles",
     )] = "gif",
     open_output: Annotated[bool, typer.Option("--open", help="Open the output file after creation")] = False,
+    verbose: Annotated[bool, typer.Option(
+        "--verbose", "-v",
+        help="Detailed debug output: library scores, episode verification, top quote matches",
+    )] = False,
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
 ) -> None:
     """Find a quote in your media library and render a clip or subtitled GIF."""
+    v.set_verbose(verbose)
     _require_ffmpeg()
     cfg = _load_cfg(config_path)
 
@@ -213,6 +219,7 @@ def find(
         console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
     else:
         matches = find_media(ref, entries)
+        _log_library_matches(ref, entries)
         if not matches:
             err_console.print(
                 f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
@@ -644,8 +651,21 @@ def _print_matched_cue(locate) -> None:
     sub_count = len(locate.subtitle_cues)
     if sub_count:
         console.print(f"[dim]Loaded {sub_count} subtitle cues.[/dim]")
+    score_part = ""
+    if locate.match_score is not None:
+        score_part = f" [dim](score {locate.match_score:.0f}"
+        if locate.runner_up_score is not None:
+            margin = locate.match_score - locate.runner_up_score
+            score_part += f", margin over #2: {margin:.0f}"
+        score_part += ")[/dim]"
+    source_part = ""
+    if locate.transcript_source:
+        source_part = f" [dim]via {locate.transcript_source}[/dim]"
+    query_part = ""
+    if locate.match_query:
+        query_part = f" [dim]query: {locate.match_query!r}[/dim]"
     console.print(
-        f"[green]Matched cue[/green] at "
+        f"[green]Matched cue[/green]{score_part}{source_part}{query_part} at "
         f"[bold]{cue.start:.1f}s – {cue.end:.1f}s[/bold]: "
         f"[italic]\"{cue.text}\"[/italic]"
     )
@@ -694,6 +714,26 @@ def _provider_has_key(cfg: AppConfig, name: str) -> bool:
     if name == "ollama":
         return True  # local, no key needed
     return False
+
+
+def _log_library_matches(ref: EpisodeRef, entries) -> None:
+    if not v.is_verbose():
+        return
+    from quotegif.library import rank_media_matches
+
+    v.section("Library index matches")
+    ranked = rank_media_matches(ref, entries)
+    if not ranked:
+        v.log("No entries matched the EpisodeRef filters.")
+        return
+    v.log(f"Top matches for {ref.display()}:")
+    for score, entry in ranked[:15]:
+        ep = (
+            f"S{entry.season:02d}E{entry.episode:02d}"
+            if entry.season and entry.episode
+            else "movie"
+        )
+        v.log(f"  {score:.0f}  {ep}  {entry.title}  →  {entry.path}")
 
 
 def _show_identification_candidates(candidates: list[EpisodeRef]) -> None:
