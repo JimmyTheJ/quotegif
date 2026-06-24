@@ -125,11 +125,20 @@ def find(
         )
         raise typer.Exit(1)
 
-    media_path = matches[0].path
-    if len(matches) > 1 and not yes:
-        media_path = _pick_file(matches)
+    from quotegif.media_select import select_media_file
 
-    console.print(f"[dim]File:[/dim] {media_path}")
+    try:
+        with console.status("Selecting episode (scanning subtitles across candidates)…"):
+            media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
+    except LookupError as e:
+        err_console.print(f"[red]{e}[/red]")
+        if len(matches) > 1 and not yes:
+            console.print("[yellow]Candidates from library index:[/yellow]")
+            media_path = _pick_file(matches)
+        else:
+            raise typer.Exit(1)
+    else:
+        console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
 
     try:
         with console.status("Locating quote in file…"):
@@ -496,11 +505,19 @@ def _render_from_ref(
         )
         raise typer.Exit(1)
 
-    media_path = matches[0].path
-    if len(matches) > 1 and not yes:
-        media_path = _pick_file(matches)
+    from quotegif.media_select import select_media_file
 
-    console.print(f"[dim]File:[/dim] {media_path}")
+    try:
+        with console.status("Selecting episode (scanning subtitles across candidates)…"):
+            media_path, pick_reason = select_media_file(ref, original_quote, matches, cfg)
+    except LookupError as e:
+        err_console.print(f"[red]{e}[/red]")
+        if len(matches) > 1 and not yes:
+            media_path = _pick_file(matches)
+        else:
+            raise typer.Exit(1)
+    else:
+        console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
 
     try:
         with console.status("Locating quote in file…"):

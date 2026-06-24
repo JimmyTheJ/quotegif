@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz
 
+from quotegif.media_select import is_extra_content
 from quotegif.models import EpisodeRef, MediaEntry
 from quotegif.utils import VIDEO_EXTENSIONS, normalize_text
 
@@ -15,22 +17,50 @@ if TYPE_CHECKING:
 
 _CACHE_PATH = Path.home() / ".cache" / "quotegif" / "index.json"
 
-# Words too generic to distinguish franchise entries (e.g. multiple Star Trek shows).
 _TITLE_STOPWORDS = frozenset({
     "the", "a", "an", "and", "of", "in", "to", "for", "on", "at",
-    "star", "trek",  # franchise-level; need show-specific tokens too
+    "star", "trek",
 })
+
+_SHOW_ALIASES: dict[frozenset[str], frozenset[str]] = {
+    frozenset({"deep", "space", "nine"}): frozenset({"deep", "space", "nine", "ds9"}),
+    frozenset({"next", "generation"}): frozenset({"next", "generation", "tng"}),
+    frozenset({"original", "series"}): frozenset({"original", "series", "tos"}),
+    frozenset({"deep", "space"}): frozenset({"deep", "space", "nine", "ds9"}),
+}
 
 
 def _significant_title_tokens(title: str) -> set[str]:
-    """Title words that should appear in a real match (not generic stopwords)."""
     tokens = set(normalize_text(title).split())
     sig = {t for t in tokens if len(t) > 2 and t not in _TITLE_STOPWORDS}
     return sig or tokens
 
 
+def _expand_ref_tokens(ref_sig: set[str]) -> set[str]:
+    expanded = set(ref_sig)
+    frozen = frozenset(ref_sig)
+    for key, aliases in _SHOW_ALIASES.items():
+        if key <= ref_sig:
+            expanded |= aliases
+    return expanded
+
+
+def _path_context_text(path: Path) -> str:
+    """Use parent folders + filename — guessit often misses the real show name."""
+    parts = list(path.parts[-5:])
+    return normalize_text(" ".join(parts))
+
+
+def _title_overlap(ref_sig: set[str], entry: MediaEntry) -> float:
+    if not ref_sig:
+        return 1.0
+    expanded = _expand_ref_tokens(ref_sig)
+    entry_text = normalize_text(entry.title) + " " + _path_context_text(entry.path)
+    entry_tokens = set(entry_text.split())
+    return len(expanded & entry_tokens) / len(ref_sig)
+
+
 def _first_int(value: object) -> int | None:
-    """Coerce a guessit value (int, str, or list thereof) to a single int, or None."""
     if value is None:
         return None
     if isinstance(value, list):
@@ -74,8 +104,8 @@ def _guess_entry(path: Path) -> MediaEntry | None:
 
 
 def build_index(folders: list[Path], verbose: bool = False) -> list[MediaEntry]:
-    """Walk all configured folders and build a MediaEntry list."""
     entries: list[MediaEntry] = []
+    skipped_extras = 0
     for folder in folders:
         if not folder.exists():
             if verbose:
@@ -84,9 +114,14 @@ def build_index(folders: list[Path], verbose: bool = False) -> list[MediaEntry]:
         for path in folder.rglob("*"):
             if path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
+            if is_extra_content(path):
+                skipped_extras += 1
+                continue
             entry = _guess_entry(path)
             if entry:
                 entries.append(entry)
+    if verbose and skipped_extras:
+        print(f"[info] skipped {skipped_extras} extras/deleted-scene files")
     return entries
 
 
@@ -132,7 +167,6 @@ def load_cached_index(path: Path = _CACHE_PATH) -> list[MediaEntry] | None:
 
 
 def get_index(config: "AppConfig", force_rebuild: bool = False) -> list[MediaEntry]:
-    """Return cached index or rebuild it."""
     if not force_rebuild:
         cached = load_cached_index()
         if cached is not None:
@@ -149,21 +183,25 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
     """
     ref_title_norm = normalize_text(ref.title)
     ref_sig = _significant_title_tokens(ref.title)
+    min_title = 75 if ref.season is None and ref.episode is None else 60
     candidates: list[tuple[float, MediaEntry]] = []
 
     for entry in entries:
-        entry_title_norm = normalize_text(entry.title)
-        title_score = fuzz.token_sort_ratio(ref_title_norm, entry_title_norm)
-
-        if title_score < 60:
+        if is_extra_content(entry.path):
             continue
 
-        # Require show-specific title overlap (avoids Star Trek S02E11 collisions).
-        if ref_sig:
-            entry_sig = _significant_title_tokens(entry.title)
-            overlap = len(ref_sig & entry_sig) / len(ref_sig)
-            if overlap < 0.34:
-                continue
+        entry_title_norm = normalize_text(entry.title)
+        title_score = max(
+            fuzz.token_sort_ratio(ref_title_norm, entry_title_norm),
+            fuzz.partial_ratio(ref_title_norm, _path_context_text(entry.path)),
+        )
+
+        if title_score < min_title:
+            continue
+
+        overlap = _title_overlap(ref_sig, entry)
+        if ref_sig and overlap < 0.34:
+            continue
 
         if ref.media_type == "tv":
             if entry.media_type != "tv":
@@ -173,11 +211,11 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
             if ref.episode is not None and entry.episode != ref.episode:
                 continue
 
-        score = title_score
-        # Boost exact title matches
+        score = float(title_score) + overlap * 30.0
         if ref_title_norm == entry_title_norm:
             score += 20
-        # Boost year match for movies
+        if ref_title_norm in _path_context_text(entry.path):
+            score += 25
         if ref.media_type == "movie" and ref.season is None:
             score += 5
 
