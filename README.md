@@ -1,12 +1,12 @@
 # quotegif
 
-Turn a vague half-remembered quote into an animated GIF of the exact moment.
+Turn a vague half-remembered quote into a clip or subtitled GIF of the exact moment.
 
 ```
 quotegif find "the one where he says something about soup"
 ```
 
-QuoteGif uses an LLM with web search to identify the show, season, and episode from your quote, locates the file in your local media library, finds the exact timestamp via subtitles (with Whisper transcription as fallback), and renders a high-quality animated GIF with ffmpeg.
+QuoteGif uses an LLM with web search to identify the show, season, and episode from your quote, locates the file in your local media library, finds the exact timestamp via subtitles (with Whisper transcription as fallback), and renders either a **video clip with audio** or a **silent GIF with burned-in subtitles**.
 
 ---
 
@@ -163,6 +163,7 @@ docker compose build
 
 ```bash
 ./qg find "no soup for you"
+./qg find "no soup for you" --format clip
 ./qg find "that's what she said" --pad-before 2 --width 640
 ./qg find "no soup for you" --episode "Seinfeld S07E06"   # skip LLM, you know the episode
 ./qg find "no soup for you" --provider ollama              # use local model
@@ -197,35 +198,44 @@ This uses `QUOTEGIF_WHISPER_DEVICE=cuda` automatically.
 
 ### `quotegif find <quote>`
 
-Identify the quote's source, find it in your library, and render a GIF.
+Identify the quote's source, find it in your library, and render output.
+
+**Output formats (`--format`):**
+
+| Format | What you get |
+|--------|----------------|
+| `gif` (default) | Silent animated GIF with **all dialogue in the clip burned in as subtitles**. Uses existing subs if present; otherwise Whisper generates them. |
+| `clip` | Video clip with **full audio**, same container/codec as the source when possible. Best when you want to hear the quote. |
 
 ```
 Options:
+  --format     clip | gif   Output type (default: gif)
   --pad-before FLOAT   Seconds before the quote starts (default: 1.5)
   --pad-after  FLOAT   Seconds after the quote ends   (default: 2.5)
   --fps        INT     GIF frames per second           (default: 12)
   --width      INT     GIF pixel width                 (default: 480)
   --provider   TEXT    Override LLM provider (openai|anthropic|ollama)
+  --model      TEXT    Override model for the provider
   --episode    TEXT    Skip LLM; specify episode directly e.g. "The Office S03E14"
   --yes / -y           Auto-confirm low-confidence and ambiguous matches
-  --open               Open the GIF after creation
+  --open               Open the output file after creation
   --config     PATH    Path to config TOML file
 ```
 
 **Examples:**
 
 ```bash
-# Vague quote, let the LLM figure it out
-quotegif find "the one where he says something about soup"
+# Subtitled GIF (default) — quote is readable without audio
+quotegif find "no soup for you"
+
+# Video clip with audio — hear the quote in context
+quotegif find "no soup for you" --format clip
 
 # You know which episode — skip LLM identification
-quotegif find "no soup for you" --episode "Seinfeld S07E06"
+quotegif find "no soup for you" --episode "Seinfeld S07E06" --format clip
 
-# Longer padding, higher resolution
+# Longer padding, higher resolution GIF
 quotegif find "winter is coming" --pad-before 3 --pad-after 4 --width 640
-
-# Use Anthropic instead of the configured default
-quotegif find "we were on a break" --provider anthropic
 ```
 
 ### `quotegif index`
@@ -298,7 +308,8 @@ Subtitles (.srt / embedded)  →  best matching timestamp
     ↓ (if no subtitle match)
 Whisper transcription        →  timestamp
     ↓
-ffmpeg two-pass palettegen/paletteuse  →  animated GIF
+--format clip  →  ffmpeg stream copy  →  video clip (audio intact)
+--format gif   →  burn subs into frames  →  animated GIF
 ```
 
 ### Providers

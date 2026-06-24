@@ -14,7 +14,8 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from quotegif.config import AppConfig, check_ffmpeg, load_config
-from quotegif.models import ClipSpec, EpisodeRef
+from quotegif.models import EpisodeRef
+from quotegif.pipeline import OutputFormat, locate_quote, render_output
 
 app = typer.Typer(
     name="quotegif",
@@ -52,10 +53,14 @@ def find(
     model: Annotated[Optional[str], typer.Option("--model", help="Override the model used by the provider (e.g. gpt-4o-mini, llama3.2)")] = None,
     episode: Annotated[Optional[str], typer.Option("--episode", help='Skip LLM, specify episode directly e.g. "The Office S03E14"')] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm low-confidence and ambiguous matches")] = False,
-    open_gif: Annotated[bool, typer.Option("--open", help="Open the GIF after creation")] = False,
+    output_format: Annotated[OutputFormat, typer.Option(
+        "--format",
+        help="clip: video+audio (same codec when possible) | gif: silent GIF with burned-in subtitles",
+    )] = "gif",
+    open_output: Annotated[bool, typer.Option("--open", help="Open the output file after creation")] = False,
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
 ) -> None:
-    """Find a quote in your media library and render it as an animated GIF."""
+    """Find a quote in your media library and render a clip or subtitled GIF."""
     _require_ffmpeg()
     cfg = _load_cfg(config_path)
 
@@ -126,75 +131,31 @@ def find(
 
     console.print(f"[dim]File:[/dim] {media_path}")
 
-    # Step 3: Load subtitles, fall back to Whisper
-    search_query = ref.exact_quote or quote
-    from quotegif.matcher import match_quote
-    from quotegif.subtitles import get_cues
-
-    with console.status("Loading subtitles…"):
-        cues = get_cues(media_path)
-
-    best_cue = None
-    if cues:
-        console.print(f"[dim]Found {len(cues)} subtitle cues.[/dim]")
-        best_cue = match_quote(search_query, cues)
-
-    if best_cue is None and cfg.whisper.enabled:
-        console.print("[yellow]No subtitle match found.[/yellow] Falling back to Whisper transcription…")
-        try:
-            from quotegif.transcribe import transcribe
-            with console.status(f"Transcribing with Whisper ({cfg.whisper.model})… this may take a while"):
-                whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
-            best_cue = match_quote(search_query, whisper_cues)
-        except ImportError as e:
-            err_console.print(f"[red]Whisper not available:[/red] {e}")
-        except Exception as e:
-            err_console.print(f"[red]Transcription failed:[/red] {e}")
-
-    if best_cue is None:
-        err_console.print(
-            "[red]Could not locate the quote in the episode.[/red] "
-            "Try a more specific quote or check the episode identifier."
-        )
+    try:
+        with console.status("Locating quote in file…"):
+            locate = locate_quote(ref, quote, cfg, media_path)
+    except LookupError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except ImportError as e:
+        err_console.print(f"[red]Whisper not available:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        err_console.print(f"[red]Location failed:[/red] {e}")
         raise typer.Exit(1)
 
-    console.print(
-        f"[green]Matched cue[/green] at "
-        f"[bold]{best_cue.start:.1f}s – {best_cue.end:.1f}s[/bold]: "
-        f"[italic]\"{best_cue.text}\"[/italic]"
-    )
+    _print_matched_cue(locate)
 
-    # Step 4: Render GIF
-    spec = ClipSpec(
-        media_path=media_path,
-        cue=best_cue,
-        pad_before=cfg.pad_before,
-        pad_after=cfg.pad_after,
-        max_duration=cfg.max_duration,
-    )
-    console.print(
-        f"[bold cyan]Rendering GIF[/bold cyan] "
-        f"({spec.clip_start:.1f}s – {spec.clip_end:.1f}s, "
-        f"{spec.duration:.1f}s, {cfg.gif.fps}fps, {cfg.gif.width}px wide)…"
-    )
-
-    from quotegif.gifmaker import make_gif
     try:
         with console.status("Running ffmpeg…"):
-            out_path = make_gif(
-                spec=spec,
-                output_dir=cfg.output_dir,
-                fps=cfg.gif.fps,
-                width=cfg.gif.width,
-                episode_label=ref.display(),
-            )
+            out_path = _render_and_report(locate, cfg, ref.display(), output_format)
     except RuntimeError as e:
-        err_console.print(f"[red]GIF creation failed:[/red] {e}")
+        err_console.print(f"[red]Render failed:[/red] {e}")
         raise typer.Exit(1)
 
     console.print(Panel(f"[bold green]Done![/bold green] {out_path}", expand=False))
 
-    if open_gif:
+    if open_output:
         _open_file(out_path)
 
 
@@ -209,7 +170,11 @@ def compare(
         "--models",
         help="Comma-separated model overrides, matched by position to --providers. e.g. gpt-4o-mini,llama3.2",
     )] = None,
-    gif: Annotated[bool, typer.Option("--gif", help="After comparing, pick a result and render the GIF")] = False,
+    gif: Annotated[bool, typer.Option("--gif", help="After comparing, pick a result and render output")] = False,
+    output_format: Annotated[OutputFormat, typer.Option(
+        "--format",
+        help="clip: video+audio | gif: silent GIF with burned-in subtitles (used with --gif)",
+    )] = "gif",
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm when proceeding to GIF")] = False,
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
 ) -> None:
@@ -315,9 +280,9 @@ def compare(
     if not gif:
         # Print hint for continuing to GIF
         console.print(
-            "\n[dim]To render a GIF from one of these results, run:[/dim]\n"
+            "\n[dim]To render from one of these results, run:[/dim]\n"
             f'  quotegif find "{quote}" --provider <name>\n'
-            f'  quotegif find "{quote}" --provider <name> --model <model>\n'
+            f'  quotegif find "{quote}" --format clip\n'
             "Or re-run with [bold]--gif[/bold] to pick interactively."
         )
         return
@@ -348,7 +313,7 @@ def compare(
         chosen_name, chosen_model, chosen_ref = successful[int(choice) - 1]
 
     console.print(f"\n[dim]Using:[/dim] {chosen_name} / {chosen_model}  →  {chosen_ref.display()}")
-    _render_gif(chosen_ref, quote, cfg, yes=yes)
+    _render_from_ref(chosen_ref, quote, cfg, yes=yes, output_format=output_format)
 
 
 @app.command()
@@ -434,12 +399,16 @@ def show_config(
     console.print("  (or set [bold]QUOTEGIF_CONFIG[/bold] env var)")
 
 
-# ---- shared GIF rendering (used by both find and compare --gif) ----
+# ---- shared rendering (used by find and compare --gif) ----
 
-def _render_gif(ref: EpisodeRef, original_quote: str, cfg: AppConfig, yes: bool = False) -> None:
+def _render_from_ref(
+    ref: EpisodeRef,
+    original_quote: str,
+    cfg: AppConfig,
+    yes: bool = False,
+    output_format: OutputFormat = "gif",
+) -> None:
     from quotegif.library import find_media, get_index
-    from quotegif.matcher import match_quote
-    from quotegif.subtitles import get_cues
 
     console.print(f"[bold cyan]Searching library[/bold cyan] for: {ref.display()}")
     with console.status("Loading library index…"):
@@ -459,63 +428,60 @@ def _render_gif(ref: EpisodeRef, original_quote: str, cfg: AppConfig, yes: bool 
 
     console.print(f"[dim]File:[/dim] {media_path}")
 
-    search_query = ref.exact_quote or original_quote
-    with console.status("Loading subtitles…"):
-        cues = get_cues(media_path)
-
-    best_cue = None
-    if cues:
-        console.print(f"[dim]Found {len(cues)} subtitle cues.[/dim]")
-        best_cue = match_quote(search_query, cues)
-
-    if best_cue is None and cfg.whisper.enabled:
-        console.print("[yellow]No subtitle match found.[/yellow] Falling back to Whisper transcription…")
-        try:
-            from quotegif.transcribe import transcribe
-            with console.status(f"Transcribing with Whisper ({cfg.whisper.model})…"):
-                whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
-            best_cue = match_quote(search_query, whisper_cues)
-        except Exception as e:
-            err_console.print(f"[red]Transcription failed:[/red] {e}")
-
-    if best_cue is None:
-        err_console.print("[red]Could not locate the quote in the episode.[/red]")
+    try:
+        with console.status("Locating quote in file…"):
+            locate = locate_quote(ref, original_quote, cfg, media_path)
+    except LookupError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        err_console.print(f"[red]Location failed:[/red] {e}")
         raise typer.Exit(1)
 
-    console.print(
-        f"[green]Matched cue[/green] at "
-        f"[bold]{best_cue.start:.1f}s – {best_cue.end:.1f}s[/bold]: "
-        f"[italic]\"{best_cue.text}\"[/italic]"
-    )
+    _print_matched_cue(locate)
 
-    spec = ClipSpec(
-        media_path=media_path,
-        cue=best_cue,
-        pad_before=cfg.pad_before,
-        pad_after=cfg.pad_after,
-        max_duration=cfg.max_duration,
-    )
-    console.print(
-        f"[bold cyan]Rendering GIF[/bold cyan] "
-        f"({spec.clip_start:.1f}s – {spec.clip_end:.1f}s, "
-        f"{spec.duration:.1f}s, {cfg.gif.fps}fps, {cfg.gif.width}px wide)…"
-    )
-
-    from quotegif.gifmaker import make_gif
     try:
         with console.status("Running ffmpeg…"):
-            out_path = make_gif(
-                spec=spec,
-                output_dir=cfg.output_dir,
-                fps=cfg.gif.fps,
-                width=cfg.gif.width,
-                episode_label=ref.display(),
-            )
+            out_path = _render_and_report(locate, cfg, ref.display(), output_format)
     except RuntimeError as e:
-        err_console.print(f"[red]GIF creation failed:[/red] {e}")
+        err_console.print(f"[red]Render failed:[/red] {e}")
         raise typer.Exit(1)
 
     console.print(Panel(f"[bold green]Done![/bold green] {out_path}", expand=False))
+
+
+def _print_matched_cue(locate) -> None:
+    cue = locate.matched_cue
+    spec = locate.spec
+    sub_count = len(locate.subtitle_cues)
+    if sub_count:
+        console.print(f"[dim]Loaded {sub_count} subtitle cues.[/dim]")
+    console.print(
+        f"[green]Matched cue[/green] at "
+        f"[bold]{cue.start:.1f}s – {cue.end:.1f}s[/bold]: "
+        f"[italic]\"{cue.text}\"[/italic]"
+    )
+    console.print(
+        f"[dim]Clip window:[/dim] {spec.clip_start:.1f}s – {spec.clip_end:.1f}s "
+        f"({spec.duration:.1f}s)"
+    )
+
+
+def _render_and_report(locate, cfg: AppConfig, episode_label: str, output_format: OutputFormat) -> Path:
+    spec = locate.spec
+    if output_format == "clip":
+        console.print(
+            f"[bold cyan]Rendering clip[/bold cyan] "
+            f"({spec.clip_start:.1f}s – {spec.clip_end:.1f}s, "
+            f"{spec.duration:.1f}s, video+audio)…"
+        )
+    else:
+        console.print(
+            f"[bold cyan]Rendering GIF[/bold cyan] "
+            f"({spec.clip_start:.1f}s – {spec.clip_end:.1f}s, "
+            f"{spec.duration:.1f}s, {cfg.gif.fps}fps, {cfg.gif.width}px, subtitles burned in)…"
+        )
+    return render_output(locate, cfg, episode_label, output_format)
 
 
 # ---- helpers ----
