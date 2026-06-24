@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from quotegif.models import SubCue
-
 _SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt"}
 
 # Bitmap subtitle codecs cannot be converted to searchable text.
@@ -16,6 +16,115 @@ _BITMAP_SUB_CODECS = frozenset({
     "dvb_subtitle",
     "xsub",
 })
+
+
+@dataclass
+class StreamReport:
+    index: int
+    codec: str
+    searchable: bool
+
+
+@dataclass
+class SubtitleReport:
+    media_path: Path
+    sidecar_path: Path | None
+    sidecar_cue_count: int
+    streams: list[StreamReport]
+    loaded_cue_count: int
+    active_source: str
+    quotegif_can_search: bool
+
+
+def probe_subtitle_streams(media_path: Path) -> list[tuple[int, str]]:
+    """Return (stream_index, codec_name) for each subtitle stream."""
+    return _ffprobe_subtitle_streams(media_path)
+
+
+def is_searchable_codec(codec: str) -> bool:
+    return codec.lower() not in _BITMAP_SUB_CODECS
+
+
+def sidecar_srt_path(media_path: Path) -> Path:
+    return media_path.with_suffix(".srt")
+
+
+def inspect_subtitles(media_path: Path) -> SubtitleReport:
+    """Report subtitle streams and whether QuoteGif can search them."""
+    sidecar = _find_sidecar(media_path)
+    sidecar_cues = len(_parse_subtitle_file(sidecar)) if sidecar else 0
+    streams = [
+        StreamReport(index=idx, codec=codec, searchable=is_searchable_codec(codec))
+        for idx, codec in probe_subtitle_streams(media_path)
+    ]
+    loaded = get_cues(media_path)
+    return SubtitleReport(
+        media_path=media_path,
+        sidecar_path=sidecar,
+        sidecar_cue_count=sidecar_cues,
+        streams=streams,
+        loaded_cue_count=len(loaded),
+        active_source=get_cue_source(media_path),
+        quotegif_can_search=len(loaded) > 0,
+    )
+
+
+def extract_sidecar_srt(
+    media_path: Path,
+    *,
+    stream_index: int | None = None,
+    force: bool = False,
+) -> Path:
+    """
+    Extract a text subtitle stream to a .srt sidecar next to the video file.
+    Returns the sidecar path.
+    """
+    out_path = sidecar_srt_path(media_path)
+    existing = _find_sidecar(media_path)
+    if existing and not force and existing.suffix.lower() == ".srt":
+        return existing
+    if out_path.exists() and not force:
+        return out_path
+
+    text_streams = _text_subtitle_streams(media_path)
+    if not text_streams:
+        raise ValueError(
+            f"No text subtitle stream in {media_path.name}. "
+            "Bitmap/PGS subtitles cannot be converted to searchable .srt."
+        )
+
+    if stream_index is not None:
+        matches = [(idx, codec) for idx, codec in text_streams if idx == stream_index]
+        if not matches:
+            raise ValueError(f"Stream {stream_index} is not a searchable subtitle stream.")
+        idx, codec = matches[0]
+    else:
+        idx, codec = text_streams[0]
+
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(media_path),
+            "-map", f"0:{idx}",
+            "-c:s", "srt",
+            str(out_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed to extract subtitles: {result.stderr.strip()}")
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("ffmpeg produced an empty subtitle file.")
+
+    cues = _parse_srt(out_path)
+    if not cues:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Extracted .srt from stream {idx} ({codec}) but no cues were parsed."
+        )
+    return out_path
 
 
 def _find_sidecar(media_path: Path) -> Path | None:

@@ -71,6 +71,10 @@ def find(
         max=10,
         help="How many episode guesses to request from the LLM (verified against subtitles when possible)",
     )] = 5,
+    around: Annotated[Optional[str], typer.Option(
+        "--around",
+        help='Rough timestamp for Whisper clip window: "54:32", "1:32:05", or seconds',
+    )] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm low-confidence and ambiguous matches")] = False,
     output_format: Annotated[OutputFormat, typer.Option(
         "--format",
@@ -105,6 +109,8 @@ def find(
             "Add them to your config file (run [bold]quotegif config[/bold] to see where)."
         )
         raise typer.Exit(1)
+
+    around_seconds = _parse_around_option(around)
 
     # Step 1: Identify the source
     ref: EpisodeRef
@@ -251,10 +257,24 @@ def find(
         else:
             console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
 
+    time_hint = around_seconds if around_seconds is not None else ref.approx_timestamp
+    if time_hint is not None:
+        from quotegif.time_parse import format_timestamp
+        source = "--around" if around_seconds is not None else "LLM approx_timestamp"
+        console.print(
+            f"[dim]Whisper clip hint ({source}):[/dim] {format_timestamp(time_hint)}"
+        )
+
     try:
         with console.status("Locating quote in file…"):
             with timer.track("Locate quote in file"):
-                locate = locate_quote(ref, quote, cfg, media_path)
+                locate = locate_quote(
+                    ref,
+                    quote,
+                    cfg,
+                    media_path,
+                    around_seconds=around_seconds,
+                )
     except LookupError as e:
         err_console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
@@ -479,6 +499,133 @@ def index(
     console.print(f"[green]Index saved.[/green] Total: {len(entries)} entries.")
 
 
+@app.command(name="subs-check")
+def subs_check(
+    media_path: Annotated[Path, typer.Argument(help="Path to a video file")],
+) -> None:
+    """Inspect subtitle streams and whether QuoteGif can search them."""
+    _require_ffmpeg()
+    if not media_path.exists():
+        err_console.print(f"[red]File not found:[/red] {media_path}")
+        raise typer.Exit(1)
+
+    from quotegif.subtitles import inspect_subtitles
+
+    report = inspect_subtitles(media_path)
+    table = Table(title=f"Subtitles: {media_path.name}", show_header=True)
+    table.add_column("Property", style="bold")
+    table.add_column("Value", overflow="fold")
+    table.add_row("Sidecar", str(report.sidecar_path) if report.sidecar_path else "—")
+    table.add_row("Sidecar cues", str(report.sidecar_cue_count) if report.sidecar_path else "—")
+    table.add_row("QuoteGif source", report.active_source)
+    table.add_row("Loaded cues", str(report.loaded_cue_count))
+    searchable = "[green]yes[/green]" if report.quotegif_can_search else "[red]no[/red]"
+    table.add_row("Searchable", searchable)
+    console.print(table)
+
+    if report.streams:
+        stream_table = Table(title="Embedded streams", show_header=True)
+        stream_table.add_column("Index", justify="right")
+        stream_table.add_column("Codec")
+        stream_table.add_column("Searchable")
+        for stream in report.streams:
+            mark = "yes" if stream.searchable else "[red]no (bitmap)[/red]"
+            stream_table.add_row(str(stream.index), stream.codec, mark)
+        console.print(stream_table)
+
+    if not report.quotegif_can_search:
+        console.print(
+            "\n[yellow]QuoteGif cannot search these subtitles.[/yellow] "
+            "If a text stream exists, run [bold]quotegif subs-extract[/bold] "
+            f'"{media_path}" to create a .srt sidecar.'
+        )
+
+
+@app.command(name="subs-extract")
+def subs_extract(
+    media_path: Annotated[Path, typer.Argument(help="Path to a video file")],
+    stream: Annotated[Optional[int], typer.Option("--stream", help="Embedded subtitle stream index")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing sidecar")] = False,
+) -> None:
+    """Extract embedded text subtitles to a .srt sidecar next to the video."""
+    _require_ffmpeg()
+    if not media_path.exists():
+        err_console.print(f"[red]File not found:[/red] {media_path}")
+        raise typer.Exit(1)
+
+    from quotegif.subtitles import extract_sidecar_srt, inspect_subtitles
+
+    try:
+        with console.status("Extracting subtitles…"):
+            out_path = extract_sidecar_srt(media_path, stream_index=stream, force=force)
+    except (ValueError, RuntimeError) as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    report = inspect_subtitles(media_path)
+    console.print(
+        f"[green]Wrote[/green] {out_path}  "
+        f"[dim]({report.loaded_cue_count} searchable cues)[/dim]"
+    )
+
+
+@app.command(name="subs-extract-show")
+def subs_extract_show(
+    show: Annotated[str, typer.Argument(help="Show title as indexed in your library")],
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing .srt sidecars")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="List files only, do not extract")] = False,
+    config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
+) -> None:
+    """Extract .srt sidecars for all episodes of a show that lack searchable subtitles."""
+    _require_ffmpeg()
+    cfg = _load_cfg(config_path)
+    if not cfg.media_folders:
+        err_console.print("[red]No media_folders configured.[/red]")
+        raise typer.Exit(1)
+
+    from quotegif.library import find_media, get_index
+    from quotegif.models import EpisodeRef
+    from quotegif.subtitles import extract_sidecar_srt, inspect_subtitles, sidecar_srt_path
+
+    show_ref = EpisodeRef(title=show, media_type="tv")
+    with console.status("Loading library index…"):
+        entries = get_index(cfg)
+    episodes = find_media(show_ref, entries)
+    if not episodes:
+        err_console.print(f"[red]No episodes found[/red] for [bold]{show}[/bold].")
+        raise typer.Exit(1)
+
+    extracted = 0
+    skipped = 0
+    failed = 0
+
+    for entry in episodes:
+        report = inspect_subtitles(entry.path)
+        if report.quotegif_can_search and not force:
+            skipped += 1
+            continue
+        if dry_run:
+            label = (
+                f"S{entry.season:02d}E{entry.episode:02d}"
+                if entry.season and entry.episode
+                else entry.path.name
+            )
+            console.print(f"[dim]would extract[/dim] {label} → {sidecar_srt_path(entry.path).name}")
+            extracted += 1
+            continue
+        try:
+            out_path = extract_sidecar_srt(entry.path, force=force)
+            console.print(f"[green]extracted[/green] {out_path.name}")
+            extracted += 1
+        except (ValueError, RuntimeError) as e:
+            console.print(f"[yellow]skip[/yellow] {entry.path.name}: {e}")
+            failed += 1
+
+    console.print(
+        f"\n[bold]Done.[/bold] extracted={extracted} skipped={skipped} failed={failed}"
+    )
+
+
 @app.command(name="whisper-check")
 def whisper_check(
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
@@ -492,6 +639,8 @@ def whisper_check(
     table.add_row("enabled", str(cfg.whisper.enabled))
     table.add_row("model", cfg.whisper.model)
     table.add_row("device (config)", cfg.whisper.device)
+    table.add_row("clip_window", f"{cfg.whisper.clip_window:.0f}s")
+    table.add_row("clip_fallback_full", str(cfg.whisper.clip_fallback_full))
 
     try:
         import ctranslate2
@@ -584,6 +733,8 @@ def show_config(
 
     table.add_row("whisper.enabled", str(cfg.whisper.enabled))
     table.add_row("whisper.model", cfg.whisper.model)
+    table.add_row("whisper.clip_window", f"{cfg.whisper.clip_window:.0f}s")
+    table.add_row("whisper.clip_fallback_full", str(cfg.whisper.clip_fallback_full))
     table.add_row("ffmpeg", f"{'[green]OK[/green]' if ok else '[red]MISSING[/red]'} – {ffmpeg_msg}")
 
     console.print(table)
@@ -727,6 +878,17 @@ def _provider_has_key(cfg: AppConfig, name: str) -> bool:
     return False
 
 
+def _parse_around_option(around: str | None) -> float | None:
+    if not around:
+        return None
+    from quotegif.time_parse import parse_timestamp
+    try:
+        return parse_timestamp(around)
+    except ValueError as e:
+        err_console.print(f"[red]Invalid --around:[/red] {e}")
+        raise typer.Exit(1)
+
+
 def _show_step_timings(timer: t.RunTimer) -> None:
     if not timer.steps:
         return
@@ -771,17 +933,22 @@ def _show_identification_candidates(candidates: list[EpisodeRef]) -> None:
     table.add_column("#", justify="right", style="bold")
     table.add_column("Episode")
     table.add_column("Episode title")
+    table.add_column("Time")
     table.add_column("Exact quote", overflow="fold")
     table.add_column("Conf", justify="right")
     table.add_column("Reasoning", overflow="fold")
 
+    from quotegif.time_parse import format_timestamp
+
     for i, ref in enumerate(candidates, 1):
         conf_color = "green" if ref.confidence >= 0.7 else "yellow" if ref.confidence >= 0.4 else "red"
         ep = ref.display() if ref.media_type == "tv" else ref.title
+        time_hint = format_timestamp(ref.approx_timestamp) if ref.approx_timestamp else "–"
         table.add_row(
             str(i),
             ep,
             ref.episode_title or "–",
+            time_hint,
             f'"{ref.exact_quote}"' if ref.exact_quote else "–",
             f"[{conf_color}]{ref.confidence:.0%}[/{conf_color}]",
             ref.reasoning,
@@ -809,6 +976,9 @@ def _show_ref(ref: EpisodeRef) -> None:
         table.add_row("Episode title", ref.episode_title)
     if ref.exact_quote:
         table.add_row("Exact quote", f'"{ref.exact_quote}"')
+    if ref.approx_timestamp is not None:
+        from quotegif.time_parse import format_timestamp
+        table.add_row("Approx. time", format_timestamp(ref.approx_timestamp))
     table.add_row("Confidence", f"{ref.confidence:.0%}")
     table.add_row("Reasoning", ref.reasoning)
     console.print(table)

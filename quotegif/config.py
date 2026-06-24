@@ -93,6 +93,8 @@ class WhisperSettings:
     enabled: bool = True
     model: str = "base"
     device: str = "auto"
+    clip_window: float = 180.0  # seconds of audio to transcribe around a time hint
+    clip_fallback_full: bool = True  # if clip-window Whisper finds nothing, try full file
 
 
 @dataclass
@@ -228,12 +230,16 @@ def _build_config(raw: dict[str, Any]) -> AppConfig:
             enabled=bool(w.get("enabled", _env_bool("QUOTEGIF_WHISPER_ENABLED", cfg.whisper.enabled))),
             model=w.get("model", os.environ.get("QUOTEGIF_WHISPER_MODEL", cfg.whisper.model)),
             device=w.get("device", os.environ.get("QUOTEGIF_WHISPER_DEVICE", cfg.whisper.device)),
+            clip_window=float(w.get("clip_window", os.environ.get("QUOTEGIF_WHISPER_CLIP_WINDOW", cfg.whisper.clip_window))),
+            clip_fallback_full=bool(w.get("clip_fallback_full", _env_bool("QUOTEGIF_WHISPER_CLIP_FALLBACK_FULL", cfg.whisper.clip_fallback_full))),
         )
     else:
         cfg.whisper = WhisperSettings(
             enabled=_env_bool("QUOTEGIF_WHISPER_ENABLED", cfg.whisper.enabled),
             model=os.environ.get("QUOTEGIF_WHISPER_MODEL", cfg.whisper.model),
             device=os.environ.get("QUOTEGIF_WHISPER_DEVICE", cfg.whisper.device),
+            clip_window=float(os.environ.get("QUOTEGIF_WHISPER_CLIP_WINDOW", cfg.whisper.clip_window)),
+            clip_fallback_full=_env_bool("QUOTEGIF_WHISPER_CLIP_FALLBACK_FULL", cfg.whisper.clip_fallback_full),
         )
 
     return cfg

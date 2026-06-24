@@ -72,6 +72,8 @@ def locate_quote(
     quote: str,
     cfg: AppConfig,
     media_path: Path,
+    *,
+    around_seconds: float | None = None,
 ) -> LocateResult:
     """
     Find the quote timestamp in media_path using subtitles (Whisper fallback).
@@ -120,17 +122,51 @@ def locate_quote(
             break
 
     if best_cue is None and cfg.whisper.enabled:
-        if v.is_verbose():
-            v.log("No subtitle match — falling back to Whisper (full episode)")
-        from quotegif.transcribe import transcribe
+        from quotegif.transcribe import (
+            compute_whisper_window,
+            get_media_duration,
+            transcribe,
+        )
 
-        whisper_detail = f"{cfg.whisper.model} / {cfg.whisper.device}"
-        with t.track_step("Whisper transcription", detail=whisper_detail):
-            whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
-        subtitle_cues = whisper_cues
-        transcript_source = f"whisper ({cfg.whisper.model})"
-        if v.is_verbose():
-            v.log(f"Whisper produced {len(whisper_cues)} segments")
+        center = around_seconds if around_seconds is not None else ref.approx_timestamp
+        whisper_cues: list[SubCue] = []
+        media_duration = get_media_duration(media_path)
+
+        def _try_whisper(
+            window_start: float | None,
+            window_end: float | None,
+            detail: str,
+        ) -> list[SubCue]:
+            with t.track_step("Whisper transcription", detail=detail):
+                return transcribe(
+                    media_path,
+                    cfg.whisper.model,
+                    cfg.whisper.device,
+                    window_start=window_start,
+                    window_end=window_end,
+                )
+
+        if center is not None:
+            win_start, win_end = compute_whisper_window(
+                center, cfg.whisper.clip_window, media_duration
+            )
+            if v.is_verbose():
+                v.log(
+                    f"Whisper clip window: {win_start:.1f}s – {win_end:.1f}s "
+                    f"(hint {center:.1f}s, ±{cfg.whisper.clip_window / 2:.0f}s)"
+                )
+            whisper_detail = (
+                f"{cfg.whisper.model} / {cfg.whisper.device} · "
+                f"clip {win_start:.0f}–{win_end:.0f}s"
+            )
+            whisper_cues = _try_whisper(win_start, win_end, whisper_detail)
+            transcript_source = f"whisper clip ({cfg.whisper.model})"
+        else:
+            if v.is_verbose():
+                v.log("No subtitle match — falling back to Whisper (full episode)")
+            whisper_detail = f"{cfg.whisper.model} / {cfg.whisper.device} · full file"
+            whisper_cues = _try_whisper(None, None, whisper_detail)
+            transcript_source = f"whisper ({cfg.whisper.model})"
 
         for q in queries:
             with t.track_step("Match quote (Whisper)"):
@@ -145,6 +181,34 @@ def locate_quote(
                 if len(tops) > 1:
                     runner_up_score = tops[1][0]
                 break
+
+        if (
+            best_cue is None
+            and center is not None
+            and cfg.whisper.clip_fallback_full
+        ):
+            if v.is_verbose():
+                v.log("Clip-window Whisper missed — retrying full episode")
+            whisper_detail = f"{cfg.whisper.model} / {cfg.whisper.device} · full file"
+            whisper_cues = _try_whisper(None, None, whisper_detail)
+            transcript_source = f"whisper ({cfg.whisper.model})"
+            for q in queries:
+                with t.track_step("Match quote (Whisper)"):
+                    _log_match_rankings(q, whisper_cues, label="Whisper")
+                    cue = match_quote(q, whisper_cues)
+                    score, _ = best_quote_score(q, whisper_cues)
+                if cue is not None:
+                    best_cue = cue
+                    match_query = q
+                    match_score = score
+                    tops = top_quote_matches(q, whisper_cues, top_n=2)
+                    if len(tops) > 1:
+                        runner_up_score = tops[1][0]
+                    break
+
+        subtitle_cues = whisper_cues
+        if v.is_verbose() and whisper_cues:
+            v.log(f"Whisper produced {len(whisper_cues)} segments")
 
     if best_cue is None:
         raise LookupError(
@@ -192,12 +256,17 @@ def ensure_gif_subtitles(
 
     cues = locate.subtitle_cues
     if not cues and cfg.whisper.enabled:
-        from quotegif.transcribe import transcribe
+        from quotegif.transcribe import compute_whisper_window, get_media_duration, transcribe
 
+        center = locate.matched_cue.start
+        duration = get_media_duration(locate.media_path)
+        win_start, win_end = compute_whisper_window(center, cfg.whisper.clip_window, duration)
         cues = transcribe(
             locate.media_path,
             cfg.whisper.model,
             cfg.whisper.device,
+            window_start=win_start,
+            window_end=win_end,
         )
 
     if not cues:

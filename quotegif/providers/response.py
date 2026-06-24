@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from quotegif.models import EpisodeRef
+from quotegif.time_parse import parse_timestamp
 
 _IDENTIFY_JSON_FIELDS = """\
 Return ONLY a JSON object (no markdown fences) with:
@@ -13,6 +14,8 @@ Return ONLY a JSON object (no markdown fences) with:
 - candidates (array of 1-5 objects, best guess first). Each candidate has:
   - season (int or null), episode (int or null), episode_title (string or null)
   - exact_quote (string): verbatim line as spoken
+  - approx_timestamp (string or number or null): best guess when the line occurs in the
+    episode, as "MM:SS" or "HH:MM:SS" or seconds (e.g. "54:32"); null if unknown
   - confidence (float 0.0-1.0): confidence in THIS episode assignment specifically
   - reasoning (string): what you searched; note air-order vs DVD-order if relevant
 
@@ -44,6 +47,19 @@ def parse_json_response(text: str) -> dict[str, Any]:
     return json.loads(text)
 
 
+def _parse_approx_timestamp(raw: object) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return parse_timestamp(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def parse_candidates(data: dict[str, Any], fallback_quote: str) -> list[EpisodeRef]:
     """Parse LLM JSON into ranked EpisodeRef candidates (supports legacy single-object)."""
     title = data.get("title", "")
@@ -66,6 +82,7 @@ def parse_candidates(data: dict[str, Any], fallback_quote: str) -> list[EpisodeR
                 episode=item.get("episode"),
                 episode_title=item.get("episode_title"),
                 exact_quote=item.get("exact_quote") or fallback_quote,
+                approx_timestamp=_parse_approx_timestamp(item.get("approx_timestamp")),
                 confidence=float(item.get("confidence", 0.5)),
                 reasoning=item.get("reasoning", ""),
             )

@@ -15,6 +15,7 @@ class EpisodeRef:
     episode: int | None = None
     episode_title: str | None = None
     exact_quote: str | None = None
+    approx_timestamp: float | None = None  # seconds into episode, when known
     confidence: float = 1.0  # 0.0–1.0
     reasoning: str = ""
 
