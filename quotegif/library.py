@@ -15,6 +15,19 @@ if TYPE_CHECKING:
 
 _CACHE_PATH = Path.home() / ".cache" / "quotegif" / "index.json"
 
+# Words too generic to distinguish franchise entries (e.g. multiple Star Trek shows).
+_TITLE_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "of", "in", "to", "for", "on", "at",
+    "star", "trek",  # franchise-level; need show-specific tokens too
+})
+
+
+def _significant_title_tokens(title: str) -> set[str]:
+    """Title words that should appear in a real match (not generic stopwords)."""
+    tokens = set(normalize_text(title).split())
+    sig = {t for t in tokens if len(t) > 2 and t not in _TITLE_STOPWORDS}
+    return sig or tokens
+
 
 def _first_int(value: object) -> int | None:
     """Coerce a guessit value (int, str, or list thereof) to a single int, or None."""
@@ -135,6 +148,7 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
     Returns a ranked list (best first); empty if nothing found.
     """
     ref_title_norm = normalize_text(ref.title)
+    ref_sig = _significant_title_tokens(ref.title)
     candidates: list[tuple[float, MediaEntry]] = []
 
     for entry in entries:
@@ -143,6 +157,13 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
 
         if title_score < 60:
             continue
+
+        # Require show-specific title overlap (avoids Star Trek S02E11 collisions).
+        if ref_sig:
+            entry_sig = _significant_title_tokens(entry.title)
+            overlap = len(ref_sig & entry_sig) / len(ref_sig)
+            if overlap < 0.34:
+                continue
 
         if ref.media_type == "tv":
             if entry.media_type != "tv":

@@ -390,11 +390,32 @@ def whisper_check(
 
     try:
         from faster_whisper import WhisperModel
+        import subprocess
+        import tempfile
 
         compute = "float16" if device == "cuda" else "int8"
         with console.status(f"Loading Whisper ({cfg.whisper.model} on {device})…"):
-            WhisperModel(cfg.whisper.model, device=device, compute_type=compute)
+            model = WhisperModel(cfg.whisper.model, device=device, compute_type=compute)
         table.add_row("model load", "[green]OK[/green]")
+
+        # Model load alone is not enough — run a short inference to verify libcublas.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-f", "lavfi", "-i", "anullsrc=duration=0.5",
+                    "-ar", "16000", "-ac", "1", wav_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            with console.status("Running inference probe…"):
+                list(model.transcribe(wav_path, beam_size=1))
+            table.add_row("inference probe", "[green]OK[/green]")
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
     except Exception as e:
         table.add_row("model load", f"[red]FAILED: {e}[/red]")
         if "libcublas" in str(e).lower():

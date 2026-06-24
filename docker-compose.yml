@@ -10,39 +10,40 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # Load API keys and QUOTEGIF_* settings from .env (optional)
+    image: quotegif:cpu
     env_file:
       - path: .env
         required: false
-    # Inside the container these paths are always fixed — do not change them.
     environment:
       QUOTEGIF_MEDIA_FOLDERS: /media
       QUOTEGIF_OUTPUT_DIR: /output
-    volumes:
+    volumes: &quotegif-volumes
       - ${QUOTEGIF_HOST_MEDIA:?Set QUOTEGIF_HOST_MEDIA in .env}:/media:ro
       - ${QUOTEGIF_HOST_OUTPUT:?Set QUOTEGIF_HOST_OUTPUT in .env}:/output
-      # Persistent caches: library index + Whisper model weights
       - quotegif-index:/root/.cache/quotegif
       - quotegif-whisper:/root/.cache/huggingface
     stdin_open: true
     tty: true
 
-  # GPU variant — activate with: docker compose --profile gpu run quotegif-gpu find "..."
-  # Or: ./qg-gpu find "..."
-  # Requires the NVIDIA Container Toolkit on the host.
-  # Uses Dockerfile.gpu (CUDA runtime) so Whisper can load libcublas on the GPU.
+  # GPU variant — ./qg-gpu  or  docker compose --profile gpu run --rm quotegif-gpu
+  # Separate image (quotegif:gpu) built from Dockerfile.gpu with CUDA/cuBLAS libraries.
   quotegif-gpu:
-    extends:
-      service: quotegif
     profiles:
       - gpu
     build:
       context: .
       dockerfile: Dockerfile.gpu
+    image: quotegif:gpu
+    env_file:
+      - path: .env
+        required: false
     environment:
       QUOTEGIF_MEDIA_FOLDERS: /media
       QUOTEGIF_OUTPUT_DIR: /output
       QUOTEGIF_WHISPER_DEVICE: cuda
+    volumes: *quotegif-volumes
+    stdin_open: true
+    tty: true
     deploy:
       resources:
         reservations:

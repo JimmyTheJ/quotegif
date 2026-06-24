@@ -1,14 +1,25 @@
 # GPU image: CUDA + cuDNN runtime so faster-whisper/ctranslate2 can load libcublas on the GPU.
-# Use with: docker compose --profile gpu run --rm quotegif-gpu
+# Use with: ./qg-gpu  or  docker compose --profile gpu run --rm quotegif-gpu
 FROM nvidia/cuda:12.6.2-cudnn-runtime-ubuntu24.04
+
+# cuBLAS must be on LD_LIBRARY_PATH for ctranslate2 at inference time (not just model load).
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         ffmpeg \
+        cuda-cublas-12-6 \
+        cuda-cudart-12-6 \
     && ln -sf /usr/bin/python3 /usr/bin/python \
+    && ldconfig \
     && rm -rf /var/lib/apt/lists/*
+
+# Fail early if the image is missing cuBLAS (wrong base or incomplete CUDA install).
+RUN test -e /usr/local/cuda/lib64/libcublas.so.12 \
+    || test -e /usr/lib/x86_64-linux-gnu/libcublas.so.12
 
 WORKDIR /app
 
@@ -23,7 +34,8 @@ RUN mkdir -p /media /output
 
 ENV QUOTEGIF_MEDIA_FOLDERS=/media \
     QUOTEGIF_OUTPUT_DIR=/output \
-    QUOTEGIF_WHISPER_DEVICE=cuda
+    QUOTEGIF_WHISPER_DEVICE=cuda \
+    QUOTEGIF_BUILD=gpu
 
 ENTRYPOINT ["python", "-m", "quotegif"]
 CMD ["--help"]
