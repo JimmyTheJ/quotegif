@@ -6,7 +6,14 @@ from typing import Literal
 
 from quotegif import verbose as v
 from quotegif.config import AppConfig
-from quotegif.matcher import _DEFAULT_THRESHOLD, best_quote_score, match_quote, top_quote_matches
+from quotegif.matcher import (
+    _DEFAULT_THRESHOLD,
+    _MIN_TOKEN_COVERAGE,
+    _MIN_WORDS_FOR_COVERAGE,
+    best_quote_score,
+    match_quote,
+    top_quote_matches,
+)
 from quotegif.models import ClipSpec, EpisodeRef, SubCue
 from quotegif.subtitles import get_cue_source, get_cues
 
@@ -32,22 +39,27 @@ def _log_match_rankings(query: str, cues: list[SubCue], *, label: str) -> None:
         return
     v.log(
         f"{label} — top fuzzy matches for [italic]{query!r}[/italic] "
-        f"(threshold {_DEFAULT_THRESHOLD:.0f}):"
+        f"(score ≥{_DEFAULT_THRESHOLD:.0f}, coverage ≥{_MIN_TOKEN_COVERAGE:.0%} when 3+ words):"
     )
     from rich.table import Table
 
     table = Table(show_header=True, header_style="bold", show_lines=False)
     table.add_column("#", justify="right", width=3)
     table.add_column("Score", justify="right", width=6)
+    table.add_column("Cover", justify="right", width=6)
     table.add_column("Time", width=16)
     table.add_column("Cue text", overflow="fold")
 
-    for i, (score, cue) in enumerate(top_quote_matches(query, cues, top_n=10), 1):
-        ok = score >= _DEFAULT_THRESHOLD
+    for i, (score, coverage, cue) in enumerate(top_quote_matches(query, cues, top_n=10), 1):
+        ok = score >= _DEFAULT_THRESHOLD and (
+            len(query.split()) < _MIN_WORDS_FOR_COVERAGE
+            or coverage >= _MIN_TOKEN_COVERAGE
+        )
         score_style = "green" if ok and i == 1 else "yellow" if ok else "red"
         table.add_row(
             str(i),
             f"[{score_style}]{score:.0f}[/{score_style}]",
+            f"{coverage:.0%}",
             f"{cue.start:.1f}s – {cue.end:.1f}s",
             cue.text[:120] + ("…" if len(cue.text) > 120 else ""),
         )
