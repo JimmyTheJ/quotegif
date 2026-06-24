@@ -9,10 +9,18 @@ from quotegif.models import EpisodeRef
 class Provider(Protocol):
     """Contract every LLM provider must satisfy."""
 
-    def identify(self, quote: str) -> EpisodeRef:
+    def identify(
+        self,
+        quote: str,
+        *,
+        show_hint: str | None = None,
+        movie: bool = False,
+    ) -> EpisodeRef:
         """
         Given a vague quote string, use web search (if available) and the
         model's knowledge to identify the show/movie, season, and episode,
         returning a structured EpisodeRef.
+
+        When show_hint is set, identification is scoped to that title only.
         """
         ...

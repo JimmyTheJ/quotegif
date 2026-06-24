@@ -4,11 +4,12 @@ import json
 
 from quotegif.config import OllamaSettings
 from quotegif.models import EpisodeRef
+from quotegif.providers.prompts import build_identify_input
 
 _PROMPT_TEMPLATE = """\
 You are a media identification assistant. A user has given you a vague or partially-remembered quote from a TV show or movie. Use your knowledge to identify the source.
 
-Quote: "{quote}"
+{request}
 
 Respond with ONLY a JSON object (no markdown fences, no extra text) containing:
 - title (string): official show or movie title
@@ -35,11 +36,18 @@ class OllamaProvider:
         self._model = model_override or settings.model
         self._host = settings.host
 
-    def identify(self, quote: str) -> EpisodeRef:
+    def identify(
+        self,
+        quote: str,
+        *,
+        show_hint: str | None = None,
+        movie: bool = False,
+    ) -> EpisodeRef:
         import ollama
 
         client = ollama.Client(host=self._host)
-        prompt = _PROMPT_TEMPLATE.format(quote=quote)
+        request = build_identify_input(quote, show_hint=show_hint, movie=movie)
+        prompt = _PROMPT_TEMPLATE.format(request=request)
         response = client.generate(model=self._model, prompt=prompt)
         text = response.get("response", "").strip()
 

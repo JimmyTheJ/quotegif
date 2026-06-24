@@ -4,6 +4,7 @@ import json
 
 from quotegif.config import OpenAISettings
 from quotegif.models import EpisodeRef
+from quotegif.providers.prompts import build_identify_input
 
 _SYSTEM_PROMPT = """\
 You are a media identification assistant. The user will give you a vague or partially-remembered quote from a TV show or movie.
@@ -50,14 +51,20 @@ class OpenAIProvider:
         self._client = openai.OpenAI(api_key=settings.api_key)
         self._model = model_override or settings.model
 
-    def identify(self, quote: str) -> EpisodeRef:
+    def identify(
+        self,
+        quote: str,
+        *,
+        show_hint: str | None = None,
+        movie: bool = False,
+    ) -> EpisodeRef:
         from openai import OpenAI  # noqa: F401 – already imported above
 
         response = self._client.responses.create(
             model=self._model,
             tools=[{"type": "web_search_preview"}],
             instructions=_SYSTEM_PROMPT,
-            input=f'Quote: "{quote}"',
+            input=build_identify_input(quote, show_hint=show_hint, movie=movie),
         )
 
         # Extract text output from the response

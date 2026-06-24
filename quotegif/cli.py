@@ -53,7 +53,7 @@ def find(
     model: Annotated[Optional[str], typer.Option("--model", help="Override the model used by the provider (e.g. gpt-4o-mini, llama3.2)")] = None,
     show: Annotated[Optional[str], typer.Option(
         "--show",
-        help='Known show or movie title, e.g. "Star Trek DS9" or "The Office" (skips LLM show detection)',
+        help='Known show or movie title — LLM finds the episode within it (use with --episode to skip LLM)',
     )] = None,
     episode: Annotated[Optional[str], typer.Option(
         "--episode",
@@ -93,31 +93,57 @@ def find(
 
     # Step 1: Identify the source
     ref: EpisodeRef
-    if episode or show:
+    if episode:
         ref = _resolve_ref_from_hints(
             quote=quote,
             show=show,
             episode=episode,
             movie=movie,
         )
-        console.print(f"[dim]Using provided source:[/dim] {ref.display()}")
+        console.print(f"[dim]Using provided episode:[/dim] {ref.display()}")
     else:
         provider_name = provider or cfg.provider.name
         from quotegif.providers.registry import get_active_model
         model_label = get_active_model(cfg, provider_name, model)
-        console.print(
-            f"[bold cyan]Identifying:[/bold cyan] \"{quote}\"  "
-            f"[dim]({provider_name} / {model_label})[/dim]"
-        )
+        if show:
+            console.print(
+                f"[bold cyan]Identifying episode in[/bold cyan] {show}  "
+                f"[dim](\"{quote}\" · {provider_name} / {model_label})[/dim]"
+            )
+        else:
+            console.print(
+                f"[bold cyan]Identifying:[/bold cyan] \"{quote}\"  "
+                f"[dim]({provider_name} / {model_label})[/dim]"
+            )
         try:
             from quotegif.identify import identify_quote
-            with console.status("Asking LLM (with web search)…"):
-                ref = identify_quote(quote, cfg, provider_override=provider, model_override=model)
+            status = (
+                f"Finding episode in {show}…"
+                if show
+                else "Asking LLM (with web search)…"
+            )
+            with console.status(status):
+                ref = identify_quote(
+                    quote,
+                    cfg,
+                    provider_override=provider,
+                    model_override=model,
+                    show_hint=show,
+                    movie=movie,
+                )
         except Exception as e:
             err_console.print(f"[red]Identification failed:[/red] {e}")
             raise typer.Exit(1)
 
         _show_ref(ref)
+
+        if show and not movie and (ref.season is None or ref.episode is None):
+            err_console.print(
+                "[red]Could not determine season/episode[/red] within "
+                f"[bold]{show}[/bold]. Try a more specific quote or pass "
+                '[bold]--episode "SxxExx"[/bold].'
+            )
+            raise typer.Exit(1)
 
         if ref.confidence < 0.6:
             console.print(
@@ -144,7 +170,8 @@ def find(
     from quotegif.media_select import select_media_file
 
     try:
-        with console.status("Selecting episode (scanning subtitles across candidates)…"):
+        status = _media_select_status(ref, len(matches))
+        with console.status(status):
             media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
     except LookupError as e:
         err_console.print(f"[red]{e}[/red]")
@@ -524,7 +551,8 @@ def _render_from_ref(
     from quotegif.media_select import select_media_file
 
     try:
-        with console.status("Selecting episode (scanning subtitles across candidates)…"):
+        status = _media_select_status(ref, len(matches))
+        with console.status(status):
             media_path, pick_reason = select_media_file(ref, original_quote, matches, cfg)
     except LookupError as e:
         err_console.print(f"[red]{e}[/red]")
@@ -653,17 +681,17 @@ def _resolve_ref_from_hints(
     movie: bool = False,
 ) -> EpisodeRef:
     """Build an EpisodeRef from --show / --episode without calling the LLM."""
-    if episode:
-        return _parse_episode_string(episode, quote, show_override=show, movie=movie)
-    if show:
-        return EpisodeRef(
-            title=show.strip(),
-            media_type="movie" if movie else "tv",
-            exact_quote=quote,
-            confidence=1.0,
-            reasoning="Provided via --show",
-        )
-    raise ValueError("Either --show or --episode is required")
+    if not episode:
+        raise ValueError("--episode is required when skipping LLM identification")
+    return _parse_episode_string(episode, quote, show_override=show, movie=movie)
+
+
+def _media_select_status(ref: EpisodeRef, candidate_count: int) -> str:
+    if ref.season is not None and ref.episode is not None:
+        return "Selecting file from library…"
+    if candidate_count == 1:
+        return "Selecting file…"
+    return "Selecting episode (scanning subtitles across candidates)…"
 
 
 def _parse_episode_string(

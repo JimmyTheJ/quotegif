@@ -41,9 +41,9 @@ def select_media_file(
     if not candidates:
         raise LookupError(f"No matching file found for {ref.display()}")
 
-    # One candidate and we know the exact episode — trust the library index.
-    if len(candidates) == 1 and ref.season is not None and ref.episode is not None:
-        return candidates[0].path, "single library match"
+    # Season/episode known — pick the best library match; quote location runs on one file.
+    if ref.season is not None and ref.episode is not None:
+        return candidates[0].path, f"library match ({ref.display()})"
 
     search_query = ref.exact_quote or quote
     best_entry: MediaEntry | None = None

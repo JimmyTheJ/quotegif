@@ -4,6 +4,7 @@ import json
 
 from quotegif.config import AnthropicSettings
 from quotegif.models import EpisodeRef
+from quotegif.providers.prompts import build_identify_input
 
 _SYSTEM_PROMPT = """\
 You are a media identification assistant. The user will give you a vague or partially-remembered quote from a TV show or movie. Use the search tool to find the exact source.
@@ -60,13 +61,22 @@ class AnthropicProvider:
         self._model = model_override or settings.model
         self._search_key = settings.search_api_key
 
-    def identify(self, quote: str) -> EpisodeRef:
+    def identify(
+        self,
+        quote: str,
+        *,
+        show_hint: str | None = None,
+        movie: bool = False,
+    ) -> EpisodeRef:
         tools = []
         if self._search_key:
             tools.append(_make_tavily_tool(self._search_key))
 
         messages: list[dict] = [
-            {"role": "user", "content": f'Quote: "{quote}"'}
+            {
+                "role": "user",
+                "content": build_identify_input(quote, show_hint=show_hint, movie=movie),
+            }
         ]
 
         # Agentic loop to handle tool use
