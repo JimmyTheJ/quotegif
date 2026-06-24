@@ -22,15 +22,19 @@ def transcribe(
             "faster-whisper not installed. Run: pip install 'quotegif[whisper]'"
         ) from e
 
-    compute_type = "int8"
     resolved_device = device
     if device == "auto":
         try:
             import torch  # type: ignore[import]
             resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
-            resolved_device = "cpu"
+            try:
+                import ctranslate2
+                resolved_device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+            except Exception:
+                resolved_device = "cpu"
 
+    compute_type = "float16" if resolved_device == "cuda" else "int8"
     model = WhisperModel(model_name, device=resolved_device, compute_type=compute_type)
     segments, _ = model.transcribe(str(media_path), beam_size=5, word_timestamps=True)
 

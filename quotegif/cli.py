@@ -356,6 +356,59 @@ def index(
     console.print(f"[green]Index saved.[/green] Total: {len(entries)} entries.")
 
 
+@app.command(name="whisper-check")
+def whisper_check(
+    config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,
+) -> None:
+    """Verify faster-whisper can use the configured device (CPU or CUDA)."""
+    cfg = _load_cfg(config_path)
+
+    table = Table(title="Whisper check", show_header=False)
+    table.add_column("Setting", style="bold")
+    table.add_column("Value")
+    table.add_row("enabled", str(cfg.whisper.enabled))
+    table.add_row("model", cfg.whisper.model)
+    table.add_row("device (config)", cfg.whisper.device)
+
+    try:
+        import ctranslate2
+        cuda_count = ctranslate2.get_cuda_device_count()
+        table.add_row("ctranslate2 CUDA devices", str(cuda_count))
+    except Exception as e:
+        table.add_row("ctranslate2", f"[red]error: {e}[/red]")
+        console.print(table)
+        raise typer.Exit(1)
+
+    device = cfg.whisper.device
+    if device == "auto":
+        try:
+            import torch  # type: ignore[import]
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cuda" if cuda_count > 0 else "cpu"
+    table.add_row("resolved device", device)
+
+    try:
+        from faster_whisper import WhisperModel
+
+        compute = "float16" if device == "cuda" else "int8"
+        with console.status(f"Loading Whisper ({cfg.whisper.model} on {device})…"):
+            WhisperModel(cfg.whisper.model, device=device, compute_type=compute)
+        table.add_row("model load", "[green]OK[/green]")
+    except Exception as e:
+        table.add_row("model load", f"[red]FAILED: {e}[/red]")
+        if "libcublas" in str(e).lower():
+            err_console.print(
+                "\n[yellow]Hint:[/yellow] CUDA libraries missing in this environment. "
+                "Docker GPU users should rebuild with [bold]Dockerfile.gpu[/bold] "
+                "and run via [bold]./qg-gpu[/bold]."
+            )
+        console.print(table)
+        raise typer.Exit(1)
+
+    console.print(table)
+
+
 @app.command(name="config")
 def show_config(
     config_path: Annotated[Optional[Path], typer.Option("--config", help="Path to config TOML")] = None,

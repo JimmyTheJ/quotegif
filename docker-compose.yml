@@ -28,12 +28,17 @@ services:
     tty: true
 
   # GPU variant — activate with: docker compose --profile gpu run quotegif-gpu find "..."
+  # Or: ./qg-gpu find "..."
   # Requires the NVIDIA Container Toolkit on the host.
+  # Uses Dockerfile.gpu (CUDA runtime) so Whisper can load libcublas on the GPU.
   quotegif-gpu:
     extends:
       service: quotegif
     profiles:
       - gpu
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
     environment:
       QUOTEGIF_MEDIA_FOLDERS: /media
       QUOTEGIF_OUTPUT_DIR: /output

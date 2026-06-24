@@ -1,0 +1,29 @@
+# GPU image: CUDA + cuDNN runtime so faster-whisper/ctranslate2 can load libcublas on the GPU.
+# Use with: docker compose --profile gpu run --rm quotegif-gpu
+FROM nvidia/cuda:12.6.2-cudnn-runtime-ubuntu24.04
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        ffmpeg \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+RUN mkdir -p quotegif && touch quotegif/__init__.py
+
+RUN pip install --no-cache-dir --break-system-packages -e ".[openai,anthropic,ollama,whisper]"
+
+COPY quotegif/ quotegif/
+
+RUN mkdir -p /media /output
+
+ENV QUOTEGIF_MEDIA_FOLDERS=/media \
+    QUOTEGIF_OUTPUT_DIR=/output \
+    QUOTEGIF_WHISPER_DEVICE=cuda
+
+ENTRYPOINT ["python", "-m", "quotegif"]
+CMD ["--help"]

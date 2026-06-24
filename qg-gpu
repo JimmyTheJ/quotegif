@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# GPU wrapper — same as ./qg but uses the quotegif-gpu service (CUDA Whisper).
+#
+# Usage:
+#   ./qg-gpu find "Take my money" --format clip
+#   ./qg-gpu whisper-check
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec docker compose -f "$SCRIPT_DIR/docker-compose.yml" --profile gpu run --rm quotegif-gpu "$@"

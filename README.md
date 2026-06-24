@@ -173,13 +173,22 @@ docker compose build
 
 ### GPU variant (faster Whisper)
 
-If you have an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed:
+Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and a working `nvidia-smi` on the host.
+
+The GPU service uses `Dockerfile.gpu` (CUDA + cuDNN runtime) so Whisper can load `libcublas` — the slim CPU image is not enough for GPU inference.
+
+```bash
+docker compose --profile gpu build quotegif-gpu
+chmod +x qg-gpu
+./qg-gpu whisper-check          # verify CUDA Whisper
+./qg-gpu find "winter is coming" --format clip
+```
+
+Or without the wrapper:
 
 ```bash
 docker compose --profile gpu run --rm quotegif-gpu find "winter is coming"
 ```
-
-This uses `QUOTEGIF_WHISPER_DEVICE=cuda` automatically.
 
 ### Volume layout
 
