@@ -22,12 +22,14 @@ _TITLE_STOPWORDS = frozenset({
     "star", "trek",
 })
 
-_SHOW_ALIASES: dict[frozenset[str], frozenset[str]] = {
-    frozenset({"deep", "space", "nine"}): frozenset({"deep", "space", "nine", "ds9"}),
-    frozenset({"next", "generation"}): frozenset({"next", "generation", "tng"}),
-    frozenset({"original", "series"}): frozenset({"original", "series", "tos"}),
-    frozenset({"deep", "space"}): frozenset({"deep", "space", "nine", "ds9"}),
-}
+# Equivalent names for the same show (any token overlap links the whole group).
+_SHOW_EQUIVALENTS: list[frozenset[str]] = [
+    frozenset({"deep", "space", "nine", "ds9"}),
+    frozenset({"next", "generation", "tng"}),
+    frozenset({"original", "series", "tos"}),
+    frozenset({"voyager", "voy"}),
+    frozenset({"enterprise", "ent"}),  # ST:Enterprise — distinct from DS9/TNG
+]
 
 
 def _significant_title_tokens(title: str) -> set[str]:
@@ -38,11 +40,27 @@ def _significant_title_tokens(title: str) -> set[str]:
 
 def _expand_ref_tokens(ref_sig: set[str]) -> set[str]:
     expanded = set(ref_sig)
-    frozen = frozenset(ref_sig)
-    for key, aliases in _SHOW_ALIASES.items():
-        if key <= ref_sig:
-            expanded |= aliases
+    for group in _SHOW_EQUIVALENTS:
+        if ref_sig & group:
+            expanded |= group
     return expanded
+
+
+def _entry_tokens(entry: MediaEntry) -> set[str]:
+    text = normalize_text(entry.title) + " " + _path_context_text(entry.path)
+    return set(text.split())
+
+
+def _show_identity_matches(ref_sig: set[str], entry: MediaEntry) -> bool:
+    """True when ref and entry refer to the same series (handles DS9 vs Deep Space Nine)."""
+    if not ref_sig:
+        return True
+    entry_tok = _entry_tokens(entry)
+    for group in _SHOW_EQUIVALENTS:
+        if (ref_sig & group) and (entry_tok & group):
+            return True
+    expanded = _expand_ref_tokens(ref_sig)
+    return len(expanded & entry_tok) / len(ref_sig) >= 0.34
 
 
 def _path_context_text(path: Path) -> str:
@@ -54,10 +72,11 @@ def _path_context_text(path: Path) -> str:
 def _title_overlap(ref_sig: set[str], entry: MediaEntry) -> float:
     if not ref_sig:
         return 1.0
+    if _show_identity_matches(ref_sig, entry):
+        return 1.0
     expanded = _expand_ref_tokens(ref_sig)
-    entry_text = normalize_text(entry.title) + " " + _path_context_text(entry.path)
-    entry_tokens = set(entry_text.split())
-    return len(expanded & entry_tokens) / len(ref_sig)
+    entry_tok = _entry_tokens(entry)
+    return len(expanded & entry_tok) / len(ref_sig)
 
 
 def _first_int(value: object) -> int | None:
@@ -191,13 +210,17 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
             continue
 
         entry_title_norm = normalize_text(entry.title)
+        path_text = _path_context_text(entry.path)
         title_score = max(
             fuzz.token_sort_ratio(ref_title_norm, entry_title_norm),
-            fuzz.partial_ratio(ref_title_norm, _path_context_text(entry.path)),
+            fuzz.partial_ratio(ref_title_norm, path_text),
         )
+        identity_match = _show_identity_matches(ref_sig, entry)
 
-        if title_score < min_title:
+        if not identity_match and title_score < min_title:
             continue
+        if identity_match:
+            title_score = max(title_score, 80)
 
         overlap = _title_overlap(ref_sig, entry)
         if ref_sig and overlap < 0.34:
@@ -214,7 +237,7 @@ def find_media(ref: EpisodeRef, entries: list[MediaEntry]) -> list[MediaEntry]:
         score = float(title_score) + overlap * 30.0
         if ref_title_norm == entry_title_norm:
             score += 20
-        if ref_title_norm in _path_context_text(entry.path):
+        if ref_title_norm in path_text:
             score += 25
         if ref.media_type == "movie" and ref.season is None:
             score += 5
