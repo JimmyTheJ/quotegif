@@ -16,13 +16,31 @@ if TYPE_CHECKING:
 _CACHE_PATH = Path.home() / ".cache" / "quotegif" / "index.json"
 
 
+def _first_int(value: object) -> int | None:
+    """Coerce a guessit value (int, str, or list thereof) to a single int, or None."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _guess_entry(path: Path) -> MediaEntry | None:
     try:
         import guessit
     except ImportError as e:
         raise ImportError("guessit not installed. Run: pip install quotegif") from e
 
-    info = guessit.guessit(path.name)
+    try:
+        info = guessit.guessit(path.name)
+    except Exception:
+        return None
+
     title = info.get("title")
     if not title:
         return None
@@ -31,23 +49,13 @@ def _guess_entry(path: Path) -> MediaEntry | None:
     if info.get("type") == "episode" or info.get("season") is not None:
         media_type = "tv"
 
-    season = info.get("season")
-    if isinstance(season, list):
-        season = season[0]
-
-    episode = info.get("episode")
-    if isinstance(episode, list):
-        episode = episode[0]
-
-    year = info.get("year")
-
     return MediaEntry(
         path=path,
         title=str(title),
         media_type=media_type,  # type: ignore[arg-type]
-        season=int(season) if season is not None else None,
-        episode=int(episode) if episode is not None else None,
-        year=int(year) if year is not None else None,
+        season=_first_int(info.get("season")),
+        episode=_first_int(info.get("episode")),
+        year=_first_int(info.get("year")),
         raw_guess=dict(info),
     )
 
