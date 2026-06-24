@@ -1,0 +1,1 @@
+"""QuoteGif web interface."""

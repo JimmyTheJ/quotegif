@@ -22,16 +22,20 @@ openai = ["openai>=1.30"]
 anthropic = ["anthropic>=0.28", "tavily-python>=0.3"]
 ollama = ["ollama>=0.2"]
 whisper = ["faster-whisper>=1.0"]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
 all = [
     "openai>=1.30",
     "anthropic>=0.28",
     "tavily-python>=0.3",
     "ollama>=0.2",
     "faster-whisper>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [project.scripts]
 quotegif = "quotegif.cli:app"
+quotegif-web = "quotegif.web.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["quotegif"]

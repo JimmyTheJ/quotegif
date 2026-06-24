@@ -304,6 +304,34 @@ All settings can be configured via environment variables or a `.env` file. Copy 
 
 ---
 
+## Web UI
+
+The CLI remains the primary interface. A browser UI exposes the same **find** workflow (quote search, show/episode hints, pad before/after, output format, Whisper time hints, provider selection, etc.).
+
+### Install
+
+```bash
+pip install "quotegif[web]"
+# or alongside your existing extras:
+pip install "quotegif[all]"
+```
+
+### Run
+
+```bash
+quotegif-web
+# or
+python -m quotegif.web
+```
+
+Open **http://127.0.0.1:8765** (override with `QUOTEGIF_WEB_HOST` / `QUOTEGIF_WEB_PORT`).
+
+Jobs run in the background — the UI polls for progress, shows inline preview (GIF or video clip), and offers a download link. If the workflow needs confirmation (low LLM confidence or ambiguous library files), the UI prompts you to continue, same as interactive CLI prompts.
+
+Uses the same config, media index, and output folder as the CLI.
+
+---
+
 ## How it works
 
 ```

@@ -1,0 +1,312 @@
+const $ = (id) => document.getElementById(id);
+
+let currentJobId = null;
+let pollTimer = null;
+
+function formatDuration(seconds) {
+  if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s.toFixed(0)}s`;
+}
+
+function hideAllResultStates() {
+  $("progress").classList.add("hidden");
+  $("input-prompt").classList.add("hidden");
+  $("error").classList.add("hidden");
+  $("result").classList.add("hidden");
+  $("idle-hint").classList.add("hidden");
+}
+
+function showIdle() {
+  hideAllResultStates();
+  $("idle-hint").classList.remove("hidden");
+}
+
+function setLoading(active) {
+  $("submit-btn").disabled = active;
+}
+
+function buildPayload() {
+  const payload = {
+    quote: $("quote").value.trim(),
+    show: $("show").value.trim() || null,
+    episode: $("episode").value.trim() || null,
+    movie: $("movie").checked,
+    output_format: $("output_format").value,
+    candidates: parseInt($("candidates").value, 10) || 5,
+    auto_confirm: $("auto_confirm").checked,
+  };
+
+  const padBefore = $("pad_before").value;
+  const padAfter = $("pad_after").value;
+  const fps = $("fps").value;
+  const width = $("width").value;
+  const around = $("around").value.trim();
+  const provider = $("provider").value;
+  const model = $("model").value.trim();
+
+  if (padBefore !== "") payload.pad_before = parseFloat(padBefore);
+  if (padAfter !== "") payload.pad_after = parseFloat(padAfter);
+  if (fps !== "") payload.fps = parseInt(fps, 10);
+  if (width !== "") payload.width = parseInt(width, 10);
+  if (around) payload.around = around;
+  if (provider) payload.provider = provider;
+  if (model) payload.model = model;
+
+  return payload;
+}
+
+async function loadConfig() {
+  const pill = $("status-pill");
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+
+    $("pad_before").placeholder = String(cfg.pad_before);
+    $("pad_after").placeholder = String(cfg.pad_after);
+    $("fps").placeholder = String(cfg.gif.fps);
+    $("width").placeholder = String(cfg.gif.width);
+
+    const providerSelect = $("provider");
+    providerSelect.innerHTML = "";
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "";
+    defaultOpt.textContent = `Default (${cfg.provider})`;
+    providerSelect.appendChild(defaultOpt);
+
+    for (const p of cfg.providers) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      const tag = p.configured ? p.model : "not configured";
+      opt.textContent = `${p.name} — ${tag}`;
+      opt.disabled = !p.configured && p.name !== "ollama";
+      providerSelect.appendChild(opt);
+    }
+
+    if (cfg.ffmpeg_ok && cfg.media_folders.length > 0) {
+      pill.textContent = `Ready · ${cfg.media_folders.length} media folder(s)`;
+      pill.dataset.state = "ok";
+    } else if (!cfg.ffmpeg_ok) {
+      pill.textContent = "ffmpeg missing";
+      pill.dataset.state = "err";
+    } else {
+      pill.textContent = "No media folders configured";
+      pill.dataset.state = "warn";
+    }
+  } catch (e) {
+    pill.textContent = "API unreachable";
+    pill.dataset.state = "err";
+  }
+}
+
+function updateGifFields() {
+  const isGif = $("output_format").value === "gif";
+  document.querySelectorAll(".gif-only").forEach((el) => {
+    el.style.display = isGif ? "" : "none";
+  });
+}
+
+async function startFind(payload) {
+  setLoading(true);
+  hideAllResultStates();
+  $("progress").classList.remove("hidden");
+  $("progress-step").textContent = "Queued…";
+  $("progress-detail").textContent = "";
+
+  const res = await fetch("/api/find", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+
+  const job = await res.json();
+  currentJobId = job.id;
+  pollJob(job.id);
+}
+
+async function continueJob(body) {
+  setLoading(true);
+  $("input-prompt").classList.add("hidden");
+  $("progress").classList.remove("hidden");
+
+  const res = await fetch(`/api/jobs/${currentJobId}/continue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+
+  pollJob(currentJobId);
+}
+
+function pollJob(jobId) {
+  if (pollTimer) clearInterval(pollTimer);
+
+  const tick = async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error("Job not found");
+      const job = await res.json();
+      handleJobUpdate(job);
+    } catch (e) {
+      clearInterval(pollTimer);
+      setLoading(false);
+      showError(e.message);
+    }
+  };
+
+  tick();
+  pollTimer = setInterval(tick, 1200);
+}
+
+function handleJobUpdate(job) {
+  if (job.status === "queued" || job.status === "running") {
+    $("progress-step").textContent = job.progress_step || job.status;
+    $("progress-detail").textContent = job.progress_detail || "";
+    return;
+  }
+
+  clearInterval(pollTimer);
+  pollTimer = null;
+  setLoading(false);
+
+  if (job.status === "awaiting_input") {
+    showInputPrompt(job);
+    return;
+  }
+
+  if (job.status === "failed") {
+    showError(job.error || "Job failed");
+    return;
+  }
+
+  if (job.status === "completed") {
+    showResult(job.result);
+  }
+}
+
+function showError(message) {
+  hideAllResultStates();
+  $("error").textContent = message;
+  $("error").classList.remove("hidden");
+}
+
+function showInputPrompt(job) {
+  hideAllResultStates();
+  const wrap = $("input-prompt");
+  wrap.classList.remove("hidden");
+  wrap.innerHTML = "";
+
+  const p = document.createElement("p");
+  p.textContent = job.input?.message || "Input required";
+  wrap.appendChild(p);
+
+  const kind = job.input?.kind;
+
+  if (kind === "low_confidence") {
+    const btn = document.createElement("button");
+    btn.className = "primary";
+    btn.textContent = "Proceed anyway";
+    btn.onclick = () => continueJob({ auto_confirm: true });
+    wrap.appendChild(btn);
+    return;
+  }
+
+  if (kind === "file_pick" && job.input?.file_candidates?.length) {
+    const ul = document.createElement("ul");
+    ul.className = "candidate-list";
+    job.input.file_candidates.forEach((c) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = `${c.label} — ${c.path}`;
+      btn.onclick = () => continueJob({ media_path: c.path });
+      li.appendChild(btn);
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+  }
+}
+
+function showResult(result) {
+  hideAllResultStates();
+  $("result").classList.remove("hidden");
+
+  const meta = $("meta");
+  const matched = result.matched;
+  meta.innerHTML = `
+    <div><strong>${escapeHtml(result.ref.display)}</strong></div>
+    <div>${escapeHtml(result.pick_reason)}</div>
+    ${
+      matched
+        ? `<div>Matched at <strong>${matched.start.toFixed(1)}s</strong>: “${escapeHtml(matched.text)}”</div>`
+        : ""
+    }
+    <div>Total: ${formatDuration(result.total_seconds)}</div>
+  `;
+
+  const preview = $("preview");
+  preview.innerHTML = "";
+  const url = result.output_url;
+
+  if (result.output_format === "clip") {
+    const video = document.createElement("video");
+    video.src = url;
+    video.controls = true;
+    video.playsInline = true;
+    preview.appendChild(video);
+  } else {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "Rendered GIF";
+    preview.appendChild(img);
+  }
+
+  const dl = $("download-btn");
+  dl.href = result.download_url || `${url}?download=1`;
+
+  const tbody = $("timings-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const step of result.timings || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(step.name)}</td>
+      <td>${escapeHtml(step.detail || "—")}</td>
+      <td>${formatDuration(step.seconds)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+$("find-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await startFind(buildPayload());
+  } catch (err) {
+    setLoading(false);
+    showError(err.message);
+  }
+});
+
+$("output_format").addEventListener("change", updateGifFields);
+
+loadConfig();
+updateGifFields();
+showIdle();
