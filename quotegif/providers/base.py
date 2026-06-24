@@ -15,12 +15,12 @@ class Provider(Protocol):
         *,
         show_hint: str | None = None,
         movie: bool = False,
-    ) -> EpisodeRef:
+    ) -> list[EpisodeRef]:
         """
         Given a vague quote string, use web search (if available) and the
-        model's knowledge to identify the show/movie, season, and episode,
-        returning a structured EpisodeRef.
+        model's knowledge to identify the show/movie, season, and episode.
 
-        When show_hint is set, identification is scoped to that title only.
+        Returns ranked candidates (best first). When show_hint is set,
+        identification is scoped to that title only.
         """
         ...

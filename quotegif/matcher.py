@@ -8,6 +8,50 @@ from quotegif.utils import normalize_text
 _DEFAULT_THRESHOLD = 45.0  # minimum score (0–100) to accept a match
 
 
+def best_quote_score(
+    query: str,
+    cues: list[SubCue],
+    window: int = 3,
+) -> tuple[float, SubCue | None]:
+    """Return the best fuzzy score and matching cue (cue is None if below threshold)."""
+    if not cues:
+        return 0.0, None
+
+    query_norm = normalize_text(query)
+
+    def _score(text: str) -> float:
+        return max(
+            fuzz.partial_ratio(query_norm, normalize_text(text)),
+            fuzz.token_sort_ratio(query_norm, normalize_text(text)),
+        )
+
+    best_score = 0.0
+    best_cue: SubCue | None = None
+
+    for cue in cues:
+        s = _score(cue.text)
+        if s > best_score:
+            best_score = s
+            best_cue = cue
+
+    for i in range(len(cues)):
+        for w in range(2, min(window + 1, len(cues) - i + 1)):
+            merged_text = " ".join(c.text for c in cues[i: i + w])
+            s = _score(merged_text)
+            if s > best_score:
+                best_score = s
+                best_cue = SubCue(
+                    start=cues[i].start,
+                    end=cues[i + w - 1].end,
+                    text=merged_text,
+                    index=cues[i].index,
+                )
+
+    if best_score >= _DEFAULT_THRESHOLD:
+        return best_score, best_cue
+    return best_score, None
+
+
 def match_quote(
     query: str,
     cues: list[SubCue],
@@ -22,45 +66,9 @@ def match_quote(
 
     Returns the best matching SubCue, or None if no cue exceeds the threshold.
     """
-    if not cues:
-        return None
-
-    query_norm = normalize_text(query)
-
-    def _score(text: str) -> float:
-        return max(
-            fuzz.partial_ratio(query_norm, normalize_text(text)),
-            fuzz.token_sort_ratio(query_norm, normalize_text(text)),
-        )
-
-    best_score = 0.0
-    best_cue: SubCue | None = None
-
-    # Single-cue matching
-    for cue in cues:
-        s = _score(cue.text)
-        if s > best_score:
-            best_score = s
-            best_cue = cue
-
-    # Sliding-window merge to catch cross-cue quotes
-    for i in range(len(cues)):
-        for w in range(2, min(window + 1, len(cues) - i + 1)):
-            merged_text = " ".join(c.text for c in cues[i: i + w])
-            s = _score(merged_text)
-            if s > best_score:
-                best_score = s
-                # Use the first cue's start and last cue's end
-                merged = SubCue(
-                    start=cues[i].start,
-                    end=cues[i + w - 1].end,
-                    text=merged_text,
-                    index=cues[i].index,
-                )
-                best_cue = merged
-
-    if best_score >= threshold:
-        return best_cue
+    score, cue = best_quote_score(query, cues, window=window)
+    if score >= threshold:
+        return cue
     return None
 
 

@@ -41,9 +41,18 @@ def select_media_file(
     if not candidates:
         raise LookupError(f"No matching file found for {ref.display()}")
 
-    # Season/episode known — pick the best library match; quote location runs on one file.
+    # Season/episode known — verify against subtitles when possible before trusting.
     if ref.season is not None and ref.episode is not None:
-        return candidates[0].path, f"library match ({ref.display()})"
+        path = candidates[0].path
+        search_query = ref.exact_quote or quote
+        cues = get_cues(path)
+        if cues:
+            cue = match_quote(search_query, cues, threshold=subtitle_threshold)
+            if cue is not None:
+                return path, f"library + subtitle verified ({ref.display()})"
+            # Quote not in this episode's subs — fall through to scan candidates.
+        else:
+            return path, f"library match ({ref.display()}), no subtitles to verify"
 
     search_query = ref.exact_quote or quote
     best_entry: MediaEntry | None = None

@@ -63,6 +63,12 @@ def find(
         "--movie",
         help="Treat --show as a movie (one file), not a TV series with multiple episodes",
     )] = False,
+    candidates: Annotated[int, typer.Option(
+        "--candidates",
+        min=1,
+        max=10,
+        help="How many episode guesses to request from the LLM (verified against subtitles when possible)",
+    )] = 5,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-confirm low-confidence and ambiguous matches")] = False,
     output_format: Annotated[OutputFormat, typer.Option(
         "--format",
@@ -93,6 +99,10 @@ def find(
 
     # Step 1: Identify the source
     ref: EpisodeRef
+    llm_candidates: list[EpisodeRef] = []
+    resolved_media_path: Path | None = None
+    resolved_pick_reason: str | None = None
+
     if episode or (show and movie):
         ref = _resolve_ref_from_hints(
             quote=quote,
@@ -100,6 +110,7 @@ def find(
             episode=episode,
             movie=movie,
         )
+        llm_candidates = [ref]
         label = "movie" if movie and not episode else "episode"
         console.print(f"[dim]Using provided {label}:[/dim] {ref.display()}")
     else:
@@ -117,26 +128,28 @@ def find(
                 f"[dim]({provider_name} / {model_label})[/dim]"
             )
         try:
-            from quotegif.identify import identify_quote
+            from quotegif.identify import identify_quote_candidates
             status = (
                 f"Finding episode in {show}…"
                 if show
                 else "Asking LLM (with web search)…"
             )
             with console.status(status):
-                ref = identify_quote(
+                llm_candidates = identify_quote_candidates(
                     quote,
                     cfg,
                     provider_override=provider,
                     model_override=model,
                     show_hint=show,
                     movie=movie,
+                    max_candidates=candidates,
                 )
         except Exception as e:
             err_console.print(f"[red]Identification failed:[/red] {e}")
             raise typer.Exit(1)
 
-        _show_ref(ref)
+        _show_identification_candidates(llm_candidates)
+        ref = llm_candidates[0]
 
         if show and not movie and (ref.season is None or ref.episode is None):
             err_console.print(
@@ -148,7 +161,11 @@ def find(
 
         if ref.confidence < 0.6:
             console.print(
-                f"[yellow]Low confidence ({ref.confidence:.0%}):[/yellow] {ref.reasoning}"
+                f"[yellow]Low confidence ({ref.confidence:.0%}) on top guess:[/yellow] {ref.reasoning}"
+            )
+            console.print(
+                "[dim]LLM confidence is self-reported and episode numbers are often wrong. "
+                "Subtitle verification will be used when possible.[/dim]"
             )
             if not yes and not Confirm.ask("Proceed anyway?", default=False):
                 raise typer.Exit(0)
@@ -160,29 +177,64 @@ def find(
     with console.status("Loading library index…"):
         entries = get_index(cfg)
 
-    matches = find_media(ref, entries)
-    if not matches:
-        err_console.print(
-            f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
-            "Run [bold]quotegif index[/bold] to rebuild the index."
+    if not (episode or (show and movie)) and llm_candidates:
+        from quotegif.episode_resolve import resolve_episode
+
+        verify_status = (
+            f"Verifying LLM picks against {show} subtitles…"
+            if show
+            else "Verifying LLM picks against subtitles…"
         )
-        raise typer.Exit(1)
+        with console.status(verify_status):
+            resolved = resolve_episode(
+                llm_candidates,
+                quote,
+                entries,
+                show=show,
+            )
+        if resolved is not None:
+            ref = resolved.ref
+            resolved_media_path = resolved.media_path
+            resolved_pick_reason = resolved.reason
+            console.print(
+                f"[green]Episode resolved via subtitles[/green] → {ref.display()}  "
+                f"[dim]({resolved_pick_reason})[/dim]"
+            )
+        elif show and not movie:
+            console.print(
+                "[yellow]LLM episode guesses did not match any subtitle files.[/yellow] "
+                "Falling back to top LLM pick — consider passing "
+                '[bold]--episode "SxxExx"[/bold] if wrong.'
+            )
 
-    from quotegif.media_select import select_media_file
-
-    try:
-        status = _media_select_status(ref, len(matches))
-        with console.status(status):
-            media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
-    except LookupError as e:
-        err_console.print(f"[red]{e}[/red]")
-        if len(matches) > 1 and not yes:
-            console.print("[yellow]Candidates from library index:[/yellow]")
-            media_path = _pick_file(matches)
-        else:
-            raise typer.Exit(1)
-    else:
+    if resolved_media_path is not None:
+        media_path = resolved_media_path
+        pick_reason = resolved_pick_reason or "subtitle resolved"
         console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
+    else:
+        matches = find_media(ref, entries)
+        if not matches:
+            err_console.print(
+                f"[red]No matching file found[/red] for [bold]{ref.display()}[/bold]. "
+                "Run [bold]quotegif index[/bold] to rebuild the index."
+            )
+            raise typer.Exit(1)
+
+        from quotegif.media_select import select_media_file
+
+        try:
+            status = _media_select_status(ref, len(matches))
+            with console.status(status):
+                media_path, pick_reason = select_media_file(ref, quote, matches, cfg)
+        except LookupError as e:
+            err_console.print(f"[red]{e}[/red]")
+            if len(matches) > 1 and not yes:
+                console.print("[yellow]Candidates from library index:[/yellow]")
+                media_path = _pick_file(matches)
+            else:
+                raise typer.Exit(1)
+        else:
+            console.print(f"[dim]File:[/dim] {media_path}  [dim]({pick_reason})[/dim]")
 
     try:
         with console.status("Locating quote in file…"):
@@ -642,6 +694,35 @@ def _provider_has_key(cfg: AppConfig, name: str) -> bool:
     if name == "ollama":
         return True  # local, no key needed
     return False
+
+
+def _show_identification_candidates(candidates: list[EpisodeRef]) -> None:
+    table = Table(title="LLM identification candidates", show_lines=True)
+    table.add_column("#", justify="right", style="bold")
+    table.add_column("Episode")
+    table.add_column("Episode title")
+    table.add_column("Exact quote", overflow="fold")
+    table.add_column("Conf", justify="right")
+    table.add_column("Reasoning", overflow="fold")
+
+    for i, ref in enumerate(candidates, 1):
+        conf_color = "green" if ref.confidence >= 0.7 else "yellow" if ref.confidence >= 0.4 else "red"
+        ep = ref.display() if ref.media_type == "tv" else ref.title
+        table.add_row(
+            str(i),
+            ep,
+            ref.episode_title or "–",
+            f'"{ref.exact_quote}"' if ref.exact_quote else "–",
+            f"[{conf_color}]{ref.confidence:.0%}[/{conf_color}]",
+            ref.reasoning,
+        )
+
+    console.print(table)
+    if len(candidates) > 1:
+        console.print(
+            "[dim]Episode numbers are verified against your subtitle files when possible. "
+            "LLM confidence reflects the model's guess, not ground truth.[/dim]"
+        )
 
 
 def _show_ref(ref: EpisodeRef) -> None:

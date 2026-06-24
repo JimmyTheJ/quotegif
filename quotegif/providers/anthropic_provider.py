@@ -5,19 +5,7 @@ import json
 from quotegif.config import AnthropicSettings
 from quotegif.models import EpisodeRef
 from quotegif.providers.prompts import build_identify_input
-
-_SYSTEM_PROMPT = """\
-You are a media identification assistant. The user will give you a vague or partially-remembered quote from a TV show or movie. Use the search tool to find the exact source.
-
-After searching, respond with ONLY a JSON object (no markdown fences) containing:
-- title (string): official show or movie title
-- media_type (string): "tv" or "movie"
-- season (int or null)
-- episode (int or null)
-- episode_title (string or null)
-- exact_quote (string): verbatim quote as it appears in the script
-- confidence (float 0.0–1.0)
-- reasoning (string)"""
+from quotegif.providers.response import parse_candidates, parse_json_response, system_prompt
 
 
 def _make_tavily_tool(api_key: str) -> dict:
@@ -67,7 +55,8 @@ class AnthropicProvider:
         *,
         show_hint: str | None = None,
         movie: bool = False,
-    ) -> EpisodeRef:
+        max_candidates: int = 5,
+    ) -> list[EpisodeRef]:
         tools = []
         if self._search_key:
             tools.append(_make_tavily_tool(self._search_key))
@@ -83,8 +72,8 @@ class AnthropicProvider:
         while True:
             kwargs: dict = dict(
                 model=self._model,
-                max_tokens=1024,
-                system=_SYSTEM_PROMPT,
+                max_tokens=2048,
+                system=system_prompt(show_hint=show_hint),
                 messages=messages,
             )
             if tools:
@@ -120,14 +109,5 @@ class AnthropicProvider:
         if not text:
             raise ValueError("Anthropic returned an empty response.")
 
-        data = json.loads(text)
-        return EpisodeRef(
-            title=data["title"],
-            media_type=data["media_type"],
-            season=data.get("season"),
-            episode=data.get("episode"),
-            episode_title=data.get("episode_title"),
-            exact_quote=data.get("exact_quote", quote),
-            confidence=float(data.get("confidence", 1.0)),
-            reasoning=data.get("reasoning", ""),
-        )
+        data = parse_json_response(text)
+        return parse_candidates(data, quote)[:max_candidates]

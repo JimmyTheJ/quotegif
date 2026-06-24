@@ -30,19 +30,42 @@ def locate_quote(
     Find the quote timestamp in media_path using subtitles (Whisper fallback).
     Returns clip spec plus full subtitle track for rendering.
     """
-    from quotegif.matcher import match_quote
+    from quotegif.matcher import match_quote, best_quote_score
     from quotegif.subtitles import get_cues
 
     search_query = ref.exact_quote or quote
+    queries: list[str] = []
+    seen: set[str] = set()
+    for q in [quote, ref.exact_quote]:
+        if q and q.strip().lower() not in seen:
+            seen.add(q.strip().lower())
+            queries.append(q)
+
     subtitle_cues = get_cues(media_path)
-    best_cue = match_quote(search_query, subtitle_cues) if subtitle_cues else None
+    best_cue = None
+    best_score = 0.0
+    for q in queries:
+        if subtitle_cues:
+            cue = match_quote(q, subtitle_cues)
+            if cue is not None:
+                best_cue = cue
+                search_query = q
+                break
+            score, _ = best_quote_score(q, subtitle_cues)
+            if score > best_score:
+                best_score = score
 
     if best_cue is None and cfg.whisper.enabled:
         from quotegif.transcribe import transcribe
 
         whisper_cues = transcribe(media_path, cfg.whisper.model, cfg.whisper.device)
         subtitle_cues = whisper_cues
-        best_cue = match_quote(search_query, whisper_cues)
+        for q in queries:
+            cue = match_quote(q, whisper_cues)
+            if cue is not None:
+                best_cue = cue
+                search_query = q
+                break
 
     if best_cue is None:
         raise LookupError(
