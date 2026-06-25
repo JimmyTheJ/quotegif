@@ -17,7 +17,16 @@ from quotegif.providers.registry import KNOWN_PROVIDERS, get_active_model
 from quotegif.web import jobs
 from quotegif.web.auth import CurrentUser, get_client_ip, require_user, session_secret
 from quotegif.web.cli_runner import CliFindParams
-from quotegif.web.db import authenticate, bootstrap_user_from_env, init_db, user_count
+from quotegif.web.db import (
+    authenticate,
+    bootstrap_user_from_env,
+    get_find_history,
+    get_user_id,
+    init_db,
+    list_find_history,
+    user_count,
+)
+from quotegif.web.paths import resolve_user_output_file, user_output_dir
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -84,20 +93,37 @@ def _provider_status(cfg) -> list[dict[str, Any]]:
     return rows
 
 
-def _safe_output_path(output_path: str, cfg) -> Path:
-    resolved = Path(output_path).resolve()
-    allowed_roots = [
-        cfg.output_dir.resolve(),
-        Path.cwd().resolve(),
-    ]
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root)
-            if resolved.is_file():
-                return resolved
-        except ValueError:
-            continue
-    raise HTTPException(status_code=403, detail="Output path is not accessible")
+def _safe_output_path(output_path: str, username: str) -> Path:
+    try:
+        return resolve_user_output_file(Path(output_path), username)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Output file not found") from e
+
+
+def _history_row_to_dict(row, *, username: str) -> dict[str, Any]:
+    import json
+
+    params = json.loads(row["params_json"])
+    item: dict[str, Any] = {
+        "id": row["id"],
+        "quote": row["quote"],
+        "status": row["status"],
+        "output_format": row["output_format"],
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
+        "show": params.get("show"),
+        "episode": params.get("episode"),
+        "movie": params.get("movie"),
+    }
+    if row["status"] == "completed" and row["output_path"]:
+        item["output_path"] = row["output_path"]
+        item["output_url"] = f"/api/history/{row['id']}/output"
+        item["download_url"] = f"/api/history/{row['id']}/output?download=1"
+    return item
 
 
 def _find_params_from_request(body: FindRequest) -> CliFindParams:
@@ -162,8 +188,7 @@ def get_config(user: CurrentUser) -> dict[str, Any]:
     cfg = load_config()
     return {
         "username": user,
-        "media_folders": [str(p) for p in cfg.media_folders],
-        "output_dir": str(cfg.output_dir),
+        "output_dir": str(user_output_dir(user)),
         "pad_before": cfg.pad_before,
         "pad_after": cfg.pad_after,
         "max_duration": cfg.max_duration,
@@ -176,6 +201,7 @@ def get_config(user: CurrentUser) -> dict[str, Any]:
         "provider": cfg.provider.name,
         "providers": _provider_status(cfg),
         "ffmpeg_ok": check_ffmpeg()[0],
+        "media_folders": [str(p) for p in cfg.media_folders],
     }
 
 
@@ -233,7 +259,46 @@ def get_job_output(
         raise HTTPException(status_code=404, detail="Output not ready")
 
     cfg = load_config()
-    path = _safe_output_path(job.output_path, cfg)
+    path = _safe_output_path(job.output_path, user)
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name if download else None,
+        content_disposition_type="attachment" if download else "inline",
+    )
+
+
+@app.get("/api/history")
+def get_history(
+    user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict[str, Any]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    rows = list_find_history(user_id, limit=limit)
+    return {
+        "items": [_history_row_to_dict(row, username=user) for row in rows],
+        "output_dir": str(user_output_dir(user)),
+    }
+
+
+@app.get("/api/history/{history_id}/output")
+def get_history_output(
+    history_id: str,
+    user: CurrentUser,
+    download: Annotated[int, Query()] = 0,
+) -> FileResponse:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    row = get_find_history(history_id, user_id)
+    if not row or row["status"] != "completed" or not row["output_path"]:
+        raise HTTPException(status_code=404, detail="Output not found")
+
+    path = _safe_output_path(row["output_path"], user)
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(
         path,

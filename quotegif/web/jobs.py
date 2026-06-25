@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from quotegif.web.cli_runner import CliFindParams, CliNeedsInput, CliRunResult, run_find_cli
+from quotegif.web.cli_runner import (
+    CliFindParams,
+    CliNeedsInput,
+    cli_find_params_to_dict,
+    run_find_cli,
+)
+from quotegif.web.db import create_find_history, get_user_id, update_find_history
+from quotegif.web.paths import ensure_user_output_dir, is_path_in_user_output
 
 
 class JobStatus(str, Enum):
@@ -24,6 +31,7 @@ class JobRecord:
     status: JobStatus
     params: CliFindParams
     owner: str
+    user_id: int
     created_at: str
     updated_at: str
     progress_step: str | None = None
@@ -94,6 +102,16 @@ def _update_job(job_id: str, **kwargs: Any) -> None:
         job.updated_at = _now_iso()
 
 
+def _sync_history(job_id: str, status: str, job: JobRecord) -> None:
+    update_find_history(
+        job_id,
+        status=status,
+        output_path=job.output_path,
+        output_format=job.output_format,
+        error=job.error,
+    )
+
+
 def _apply_needs_input(job_id: str, needs: CliNeedsInput) -> None:
     _update_job(
         job_id,
@@ -106,6 +124,16 @@ def _apply_needs_input(job_id: str, needs: CliNeedsInput) -> None:
         progress_detail=needs.kind,
         error=None,
     )
+    with _lock:
+        job = _jobs.get(job_id)
+    if job:
+        _sync_history(job_id, JobStatus.AWAITING_INPUT.value, job)
+
+
+def _validate_output_path(path: str, owner: str) -> bool:
+    from pathlib import Path
+
+    return is_path_in_user_output(Path(path), owner)
 
 
 def _run_job(job_id: str) -> None:
@@ -114,6 +142,7 @@ def _run_job(job_id: str) -> None:
         if not job:
             return
         params = job.params
+        owner = job.owner
 
     def on_progress(step: str, detail: str | None = None) -> None:
         if step == "cli" and detail:
@@ -128,6 +157,7 @@ def _run_job(job_id: str) -> None:
                     current.updated_at = _now_iso()
 
     _update_job(job_id, status=JobStatus.RUNNING, progress_step="running")
+    update_find_history(job_id, status=JobStatus.RUNNING.value)
     result = run_find_cli(params, on_progress=on_progress)
 
     if result.needs_input:
@@ -143,6 +173,24 @@ def _run_job(job_id: str) -> None:
             log_tail=result.log_lines[-40:],
             progress_step="failed",
         )
+        with _lock:
+            job = _jobs.get(job_id)
+        if job:
+            _sync_history(job_id, JobStatus.FAILED.value, job)
+        return
+
+    if not _validate_output_path(result.output_path, owner):
+        _update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            error="CLI wrote output outside your user directory",
+            log_tail=result.log_lines[-40:],
+            progress_step="failed",
+        )
+        with _lock:
+            job = _jobs.get(job_id)
+        if job:
+            _sync_history(job_id, JobStatus.FAILED.value, job)
         return
 
     _update_job(
@@ -155,9 +203,19 @@ def _run_job(job_id: str) -> None:
         progress_detail=None,
         error=None,
     )
+    with _lock:
+        job = _jobs.get(job_id)
+    if job:
+        _sync_history(job_id, JobStatus.COMPLETED.value, job)
 
 
 def create_job(params: CliFindParams, *, owner: str) -> JobRecord:
+    user_id = get_user_id(owner)
+    if user_id is None:
+        raise ValueError(f"Unknown user: {owner}")
+
+    params.output_dir = str(ensure_user_output_dir(owner))
+
     job_id = uuid.uuid4().hex
     now = _now_iso()
     job = JobRecord(
@@ -165,11 +223,19 @@ def create_job(params: CliFindParams, *, owner: str) -> JobRecord:
         status=JobStatus.QUEUED,
         params=params,
         owner=owner,
+        user_id=user_id,
         created_at=now,
         updated_at=now,
     )
     with _lock:
         _jobs[job_id] = job
+
+    create_find_history(
+        job_id,
+        user_id,
+        params.quote,
+        cli_find_params_to_dict(params),
+    )
 
     thread = threading.Thread(
         target=_run_job,
@@ -199,6 +265,8 @@ def continue_job(
             params.media_path = media_path
         job.status = JobStatus.QUEUED
         job.updated_at = _now_iso()
+
+    update_find_history(job_id, status=JobStatus.QUEUED.value)
 
     thread = threading.Thread(
         target=_run_job,

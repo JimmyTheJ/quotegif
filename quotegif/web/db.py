@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,24 @@ def init_db() -> None:
                 ON login_attempts(username, attempted_at);
             CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time
                 ON login_attempts(ip_address, attempted_at);
+
+            CREATE TABLE IF NOT EXISTS find_history (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                quote TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                output_path TEXT,
+                output_format TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_find_history_user_time
+                ON find_history(user_id, created_at DESC);
             """
         )
 
@@ -86,10 +105,15 @@ def create_user(username: str, password: str) -> None:
 
     init_db()
     with _connect() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
             (username, hash_password(password), _iso(_now())),
         )
+        user_id = int(cur.lastrowid)
+
+    from quotegif.web.paths import user_output_dir_for_id
+
+    user_output_dir_for_id(user_id)
 
 
 def user_count() -> int:
@@ -209,3 +233,94 @@ def bootstrap_user_from_env() -> None:
     password = os.environ.get("QUOTEGIF_WEB_PASSWORD", "")
     if username and password:
         create_user(username, password)
+
+
+def get_user_id(username: str) -> int | None:
+    user = get_user_by_username(username)
+    return int(user["id"]) if user else None
+
+
+def create_find_history(
+    job_id: str,
+    user_id: int,
+    quote: str,
+    params: dict,
+) -> None:
+    now = _iso(_now())
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO find_history (
+                id, user_id, quote, params_json, status,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, user_id, quote, json.dumps(params), "queued", now, now),
+        )
+
+
+def update_find_history(
+    job_id: str,
+    *,
+    status: str,
+    output_path: str | None = None,
+    output_format: str | None = None,
+    error: str | None = None,
+) -> None:
+    now = _iso(_now())
+    completed_at = now if status in ("completed", "failed") else None
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE find_history
+            SET status = ?,
+                output_path = COALESCE(?, output_path),
+                output_format = COALESCE(?, output_format),
+                error = ?,
+                updated_at = ?,
+                completed_at = COALESCE(?, completed_at)
+            WHERE id = ?
+            """,
+            (
+                status,
+                output_path,
+                output_format,
+                error,
+                now,
+                completed_at,
+                job_id,
+            ),
+        )
+
+
+def list_find_history(user_id: int, *, limit: int = 100) -> list[sqlite3.Row]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, quote, params_json, status, output_path, output_format,
+                   error, created_at, updated_at, completed_at
+            FROM find_history
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return list(rows)
+
+
+def get_find_history(job_id: str, user_id: int) -> sqlite3.Row | None:
+    init_db()
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT id, quote, params_json, status, output_path, output_format,
+                   error, created_at, updated_at, completed_at
+            FROM find_history
+            WHERE id = ? AND user_id = ?
+            """,
+            (job_id, user_id),
+        ).fetchone()

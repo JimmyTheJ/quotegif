@@ -376,6 +376,19 @@ QUOTEGIF_WEB_SECRET=long-random-string-for-session-cookies
 
 Brute-force protection: **5 failed logins per username** (15-minute lockout) and **30 failed logins per IP** per hour.
 
+### Per-user output and history
+
+Each web user gets a private folder under the configured output directory:
+
+```text
+/output/user_1/   # first user (SQLite user id)
+/output/user_2/
+```
+
+Web find jobs write only into the logged-in user's folder (`QUOTEGIF_OUTPUT_DIR` is overridden per job). The UI shows **Your history** — all past queries and rendered files for that account. Download/preview URLs are scoped to the owner; other users cannot access another user's paths via the API.
+
+On Docker, these live under your host `QUOTEGIF_HOST_OUTPUT` mount (e.g. `/output/user_1/` inside the container).
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `QUOTEGIF_WEB_DB` | `~/.config/quotegif/web.db` | SQLite database path |

@@ -38,6 +38,30 @@ class CliFindParams:
     verbose: bool = False
     config_path: str | None = None
     media_path: str | None = None
+    output_dir: str | None = None
+
+
+def cli_find_params_to_dict(params: CliFindParams) -> dict:
+    return {
+        "quote": params.quote,
+        "pad_before": params.pad_before,
+        "pad_after": params.pad_after,
+        "fps": params.fps,
+        "width": params.width,
+        "provider": params.provider,
+        "model": params.model,
+        "show": params.show,
+        "episode": params.episode,
+        "movie": params.movie,
+        "candidates": params.candidates,
+        "around": params.around,
+        "yes": params.yes,
+        "output_format": params.output_format,
+        "verbose": params.verbose,
+        "config_path": params.config_path,
+        "media_path": params.media_path,
+        "output_dir": params.output_dir,
+    }
 
 
 @dataclass
@@ -147,6 +171,8 @@ def run_find_cli(
     env = os.environ.copy()
     env["QUOTEGIF_NONINTERACTIVE"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+    if params.output_dir:
+        env["QUOTEGIF_OUTPUT_DIR"] = params.output_dir
 
     if on_progress:
         on_progress("cli", " ".join(cmd))

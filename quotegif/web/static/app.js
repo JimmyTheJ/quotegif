@@ -310,6 +310,107 @@ function showResult(result) {
   }
 
   $("download-btn").href = result.download_url || `${url}?download=1`;
+  loadHistory();
+}
+
+function formatDate(iso) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
+function showPreviewFromUrls(url, outputFormat, metaHtml) {
+  hideAllResultStates();
+  $("result").classList.remove("hidden");
+  $("meta").innerHTML = metaHtml;
+  const preview = $("preview");
+  preview.innerHTML = "";
+  if (outputFormat === "clip") {
+    const video = document.createElement("video");
+    video.src = url;
+    video.controls = true;
+    video.playsInline = true;
+    preview.appendChild(video);
+  } else {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "Rendered GIF";
+    preview.appendChild(img);
+  }
+}
+
+async function loadHistory() {
+  const list = $("history-list");
+  try {
+    const res = await fetch("/api/history?limit=100", fetchOpts);
+    if (!res.ok) throw new Error("Failed to load history");
+    const data = await res.json();
+    $("history-output-dir").textContent = `Your files: ${data.output_dir}`;
+    if (!data.items.length) {
+      list.innerHTML = '<p class="idle-hint">No queries yet.</p>';
+      return;
+    }
+    list.innerHTML = "";
+    for (const item of data.items) {
+      const el = document.createElement("article");
+      el.className = "history-item";
+      if (item.id === currentJobId) el.classList.add("is-active");
+
+      const ep = [item.show, item.episode].filter(Boolean).join(" · ");
+      const sub = [ep, formatDate(item.created_at), item.output_format || ""]
+        .filter(Boolean)
+        .join(" · ");
+
+      el.innerHTML = `
+        <div class="history-item-top">
+          <div>
+            <p class="history-quote">“${escapeHtml(item.quote)}”</p>
+            <p class="history-sub">${escapeHtml(sub)}</p>
+          </div>
+          <span class="history-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+        </div>
+      `;
+
+      if (item.status === "completed" && item.output_url) {
+        const actions = document.createElement("div");
+        actions.className = "history-actions";
+        const viewBtn = document.createElement("button");
+        viewBtn.type = "button";
+        viewBtn.className = "ghost-btn";
+        viewBtn.textContent = "View";
+        viewBtn.onclick = () => {
+          document.querySelectorAll(".history-item").forEach((n) => n.classList.remove("is-active"));
+          el.classList.add("is-active");
+          showPreviewFromUrls(
+            item.output_url,
+            item.output_format,
+            `<div><strong>${escapeHtml(item.quote)}</strong></div><div>${escapeHtml(sub)}</div>`
+          );
+          $("download-btn").href = item.download_url;
+        };
+        const dl = document.createElement("a");
+        dl.className = "button";
+        dl.href = item.download_url;
+        dl.textContent = "Download";
+        dl.download = "";
+        actions.appendChild(viewBtn);
+        actions.appendChild(dl);
+        el.appendChild(actions);
+      } else if (item.error) {
+        const err = document.createElement("p");
+        err.className = "history-sub";
+        err.textContent = item.error;
+        el.appendChild(err);
+      }
+
+      list.appendChild(el);
+    }
+  } catch (e) {
+    list.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 function escapeHtml(text) {
@@ -334,11 +435,13 @@ $("logout-btn").addEventListener("click", async () => {
 });
 
 $("output_format").addEventListener("change", updateGifFields);
+$("refresh-history-btn").addEventListener("click", () => loadHistory());
 
 (async () => {
   if (await requireAuth()) {
     await loadConfig();
     updateGifFields();
     showIdle();
+    loadHistory();
   }
 })();

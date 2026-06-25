@@ -152,6 +152,17 @@
         <p id="idle-hint" class="idle-hint">Submit a quote to start. Long jobs (Whisper) may take several minutes.</p>
       </section>
     </main>
+
+    <section class="panel history-panel">
+      <div class="history-header">
+        <h2>Your history</h2>
+        <button type="button" id="refresh-history-btn" class="ghost-btn">Refresh</button>
+      </div>
+      <p id="history-output-dir" class="history-meta"></p>
+      <div id="history-list" class="history-list">
+        <p class="idle-hint">Loading…</p>
+      </div>
+    </section>
   </div>
   <script src="/app.js"></script>
 </body>
