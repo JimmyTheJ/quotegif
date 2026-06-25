@@ -15,18 +15,27 @@ app = typer.Typer(help="Manage QuoteGif web UI users.")
 @app.command("create-user")
 def create_user_cmd(
     username: str = typer.Argument(help="Login username"),
-    password: str | None = typer.Option(None, "--password", help="Password (prompted if omitted)"),
+    password: str | None = typer.Argument(
+        None,
+        help="Password (min 8 chars). Prompted securely if omitted.",
+    ),
+    password_flag: str | None = typer.Option(
+        None,
+        "--password",
+        help="Password (alternative to positional arg; useful in scripts)",
+    ),
 ) -> None:
     """Add a username/password for the web UI."""
     init_db()
-    if password is None:
-        password = getpass.getpass("Password: ")
+    resolved = password_flag or password
+    if resolved is None:
+        resolved = getpass.getpass("Password: ")
         confirm = getpass.getpass("Confirm password: ")
-        if password != confirm:
+        if resolved != confirm:
             typer.echo("Passwords do not match.", err=True)
             raise typer.Exit(1)
     try:
-        create_user(username, password)
+        create_user(username, resolved)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)

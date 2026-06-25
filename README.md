@@ -205,7 +205,7 @@ chmod +x qg-web-gpu
 ./qg-web-gpu up -d quotegif-web-gpu
 
 # Create a login user (first time)
-./qg-web-gpu exec quotegif-web-gpu quotegif-web-create-user jamus
+./qg-web-gpu exec quotegif-web-gpu quotegif-web-create-user jamus your-secure-password
 
 # Or bootstrap from .env: QUOTEGIF_WEB_USERNAME / QUOTEGIF_WEB_PASSWORD / QUOTEGIF_WEB_SECRET
 ```
@@ -361,7 +361,9 @@ pip install "quotegif[all]"
 Create a user (stored in SQLite, default `~/.config/quotegif/web.db`):
 
 ```bash
-quotegif-web-create-user jamus
+quotegif-web-create-user jamus your-secure-password
+# or: quotegif-web-create-user jamus --password your-secure-password
+# or omit password to be prompted
 ```
 
 Or bootstrap the first user from the environment on startup:

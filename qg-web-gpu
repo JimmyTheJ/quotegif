@@ -4,7 +4,7 @@
 #   ./qg-web-gpu up -d          # start in background
 #   ./qg-web-gpu logs -f        # follow logs
 #   ./qg-web-gpu down           # stop
-#   ./qg-web-gpu exec quotegif-web-gpu quotegif-web-create-user jamus
+#   ./qg-web-gpu exec quotegif-web-gpu quotegif-web-create-user jamus your-password
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec docker compose -f "$SCRIPT_DIR/docker-compose.yml" --profile web --profile gpu "$@"

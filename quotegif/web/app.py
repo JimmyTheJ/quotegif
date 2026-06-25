@@ -254,7 +254,7 @@ def main() -> None:
     ):
         print(
             "Warning: no web users configured. "
-            "Set QUOTEGIF_WEB_USERNAME/PASSWORD or run: quotegif-web-create-user USER"
+            "Set QUOTEGIF_WEB_USERNAME/PASSWORD or run: quotegif-web-create-user USER [PASSWORD]"
         )
 
     host = os.environ.get("QUOTEGIF_WEB_HOST", "127.0.0.1")
