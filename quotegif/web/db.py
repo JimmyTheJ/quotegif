@@ -75,6 +75,13 @@ def init_db() -> None:
                 ON find_history(user_id, created_at DESC);
             """
         )
+        _migrate_find_history(conn)
+
+
+def _migrate_find_history(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(find_history)")}
+    if "parent_id" not in cols:
+        conn.execute("ALTER TABLE find_history ADD COLUMN parent_id TEXT")
 
 
 def _now() -> datetime:
@@ -245,6 +252,8 @@ def create_find_history(
     user_id: int,
     quote: str,
     params: dict,
+    *,
+    parent_id: str | None = None,
 ) -> None:
     now = _iso(_now())
     init_db()
@@ -253,10 +262,48 @@ def create_find_history(
             """
             INSERT INTO find_history (
                 id, user_id, quote, params_json, status,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, parent_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (job_id, user_id, quote, json.dumps(params), "queued", now, now),
+            (job_id, user_id, quote, json.dumps(params), "queued", now, now, parent_id),
+        )
+
+
+def create_completed_edit_history(
+    history_id: str,
+    user_id: int,
+    quote: str,
+    params: dict,
+    output_path: str,
+    output_format: str,
+    *,
+    parent_id: str,
+) -> None:
+    now = _iso(_now())
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO find_history (
+                id, user_id, quote, params_json, status,
+                output_path, output_format, error,
+                created_at, updated_at, completed_at, parent_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                history_id,
+                user_id,
+                quote,
+                json.dumps(params),
+                "completed",
+                output_path,
+                output_format,
+                None,
+                now,
+                now,
+                now,
+                parent_id,
+            ),
         )
 
 
@@ -301,7 +348,7 @@ def list_find_history(user_id: int, *, limit: int = 100) -> list[sqlite3.Row]:
         rows = conn.execute(
             """
             SELECT id, quote, params_json, status, output_path, output_format,
-                   error, created_at, updated_at, completed_at
+                   error, created_at, updated_at, completed_at, parent_id
             FROM find_history
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -318,7 +365,7 @@ def get_find_history(job_id: str, user_id: int) -> sqlite3.Row | None:
         return conn.execute(
             """
             SELECT id, quote, params_json, status, output_path, output_format,
-                   error, created_at, updated_at, completed_at
+                   error, created_at, updated_at, completed_at, parent_id
             FROM find_history
             WHERE id = ? AND user_id = ?
             """,

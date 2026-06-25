@@ -3,6 +3,8 @@ const $ = (id) => document.getElementById(id);
 let currentJobId = null;
 let pollTimer = null;
 let currentUser = null;
+let trimState = null;
+let trimPreviewToken = null;
 
 const fetchOpts = { credentials: "same-origin" };
 
@@ -363,6 +365,8 @@ async function loadHistory() {
       if (item.id === currentJobId) el.classList.add("is-active");
 
       const ep = [item.show, item.episode].filter(Boolean).join(" · ");
+      const editNote = item.edit_summary ? ` · ${item.edit_summary}` : "";
+      const parentNote = item.parent_id ? '<span class="history-badge">edited</span>' : "";
       const sub = [ep, formatDate(item.created_at), item.output_format || ""]
         .filter(Boolean)
         .join(" · ");
@@ -370,8 +374,8 @@ async function loadHistory() {
       el.innerHTML = `
         <div class="history-item-top">
           <div>
-            <p class="history-quote">“${escapeHtml(item.quote)}”</p>
-            <p class="history-sub">${escapeHtml(sub)}</p>
+            <p class="history-quote">“${escapeHtml(item.quote)}”${parentNote}</p>
+            <p class="history-sub">${escapeHtml(sub)}${escapeHtml(editNote)}</p>
           </div>
           <span class="history-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
         </div>
@@ -387,19 +391,27 @@ async function loadHistory() {
         viewBtn.onclick = () => {
           document.querySelectorAll(".history-item").forEach((n) => n.classList.remove("is-active"));
           el.classList.add("is-active");
+          const metaParts = [escapeHtml(item.quote), escapeHtml(sub)];
+          if (item.edit_summary) metaParts.push(escapeHtml(item.edit_summary));
           showPreviewFromUrls(
             item.output_url,
             item.output_format,
-            `<div><strong>${escapeHtml(item.quote)}</strong></div><div>${escapeHtml(sub)}</div>`
+            metaParts.map((p) => `<div>${p}</div>`).join("")
           );
           $("download-btn").href = item.download_url;
         };
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "ghost-btn";
+        editBtn.textContent = "Trim";
+        editBtn.onclick = () => openTrimEditor(item.id);
         const dl = document.createElement("a");
         dl.className = "button";
         dl.href = item.download_url;
         dl.textContent = "Download";
         dl.download = "";
         actions.appendChild(viewBtn);
+        if (item.can_edit) actions.appendChild(editBtn);
         actions.appendChild(dl);
         el.appendChild(actions);
       } else if (item.error) {
@@ -422,6 +434,215 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function clampTrimValue(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function setTrimError(message) {
+  const el = $("trim-error");
+  if (!message) {
+    el.textContent = "";
+    el.classList.add("hidden");
+    return;
+  }
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+function updateTrimUi() {
+  if (!trimState) return;
+
+  const { duration, trimStart, trimEnd } = trimState;
+  const startPct = (trimStart / duration) * 100;
+  const endPct = (trimEnd / duration) * 100;
+
+  $("trim-range-start").max = String(duration);
+  $("trim-range-end").max = String(duration);
+  $("trim-range-start").value = String(trimStart);
+  $("trim-range-end").value = String(trimEnd);
+  $("trim-input-start").max = String(duration);
+  $("trim-input-end").max = String(duration);
+  $("trim-input-start").value = trimStart.toFixed(2);
+  $("trim-input-end").value = trimEnd.toFixed(2);
+
+  const bar = $("trim-selection-bar");
+  bar.style.left = `${startPct}%`;
+  bar.style.width = `${Math.max(0, endPct - startPct)}%`;
+
+  $("trim-duration-label").textContent = `Source: ${formatDuration(duration)}`;
+  $("trim-selection-label").textContent =
+    `Selection: ${formatDuration(trimStart)} → ${formatDuration(trimEnd)} (${formatDuration(trimEnd - trimStart)})`;
+
+  renderTrimSourcePreview();
+  trimPreviewToken = null;
+  $("trim-result-preview").classList.add("hidden");
+  $("trim-result-preview").innerHTML = "";
+}
+
+function renderTrimSourcePreview() {
+  if (!trimState) return;
+  const wrap = $("trim-source-preview");
+  wrap.innerHTML = "";
+  const { sourceUrl, outputFormat, trimStart, trimEnd } = trimState;
+
+  if (outputFormat === "clip") {
+    const video = document.createElement("video");
+    video.src = `${sourceUrl}#t=${trimStart.toFixed(2)},${trimEnd.toFixed(2)}`;
+    video.controls = true;
+    video.playsInline = true;
+    wrap.appendChild(video);
+  } else {
+    const hint = document.createElement("p");
+    hint.className = "idle-hint";
+    hint.textContent = "Use Preview trim to see the shortened GIF.";
+    wrap.appendChild(hint);
+  }
+}
+
+function applyTrimStart(value) {
+  if (!trimState) return;
+  const next = clampTrimValue(value, 0, trimState.trimEnd - 0.1);
+  trimState.trimStart = next;
+  updateTrimUi();
+}
+
+function applyTrimEnd(value) {
+  if (!trimState) return;
+  const next = clampTrimValue(value, trimState.trimStart + 0.1, trimState.duration);
+  trimState.trimEnd = next;
+  updateTrimUi();
+}
+
+function closeTrimEditor() {
+  trimState = null;
+  trimPreviewToken = null;
+  setTrimError("");
+  $("trim-modal").classList.add("hidden");
+  $("trim-modal").setAttribute("aria-hidden", "true");
+  $("trim-result-preview").classList.add("hidden");
+  $("trim-result-preview").innerHTML = "";
+  $("trim-source-preview").innerHTML = "";
+}
+
+async function openTrimEditor(historyId) {
+  setTrimError("");
+  $("trim-save-btn").disabled = true;
+  $("trim-preview-btn").disabled = true;
+  $("trim-modal-quote").textContent = "Loading…";
+  $("trim-modal").classList.remove("hidden");
+  $("trim-modal").setAttribute("aria-hidden", "false");
+
+  try {
+    const res = await fetch(`/api/history/${historyId}/edit`, fetchOpts);
+    if (res.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const info = await res.json();
+    trimState = {
+      historyId,
+      duration: info.duration,
+      trimStart: 0,
+      trimEnd: info.duration,
+      outputFormat: info.output_format,
+      sourceUrl: info.source_url,
+      quote: info.quote,
+    };
+    $("trim-modal-quote").textContent = `“${info.quote}” · ${info.filename}`;
+    updateTrimUi();
+    $("trim-save-btn").disabled = false;
+    $("trim-preview-btn").disabled = false;
+  } catch (e) {
+    setTrimError(e.message);
+    $("trim-modal-quote").textContent = "Could not open editor";
+  }
+}
+
+function trimPayload() {
+  return {
+    trim_start: trimState.trimStart,
+    trim_end: trimState.trimEnd,
+  };
+}
+
+async function previewTrim() {
+  if (!trimState) return;
+  setTrimError("");
+  $("trim-preview-btn").disabled = true;
+  try {
+    const res = await fetch(`/api/history/${trimState.historyId}/trim/preview`, {
+      method: "POST",
+      ...fetchOpts,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(trimPayload()),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    trimPreviewToken = data.preview_token;
+    const wrap = $("trim-result-preview");
+    wrap.classList.remove("hidden");
+    wrap.innerHTML = "";
+    if (data.output_format === "clip") {
+      const video = document.createElement("video");
+      video.src = `${data.preview_url}?t=${Date.now()}`;
+      video.controls = true;
+      video.playsInline = true;
+      wrap.appendChild(video);
+    } else {
+      const img = document.createElement("img");
+      img.src = `${data.preview_url}?t=${Date.now()}`;
+      img.alt = "Trim preview";
+      wrap.appendChild(img);
+    }
+  } catch (e) {
+    setTrimError(e.message);
+  } finally {
+    $("trim-preview-btn").disabled = false;
+  }
+}
+
+async function saveTrim() {
+  if (!trimState) return;
+  setTrimError("");
+  $("trim-save-btn").disabled = true;
+  try {
+    const res = await fetch(`/api/history/${trimState.historyId}/trim`, {
+      method: "POST",
+      ...fetchOpts,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(trimPayload()),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    closeTrimEditor();
+    await loadHistory();
+    const item = data.item;
+    if (item?.output_url) {
+      showPreviewFromUrls(
+        item.output_url,
+        item.output_format,
+        `<div><strong>${escapeHtml(item.quote)}</strong></div>
+         <div>${escapeHtml(data.message || item.edit_summary || "Trim saved")}</div>`
+      );
+      $("download-btn").href = item.download_url;
+    }
+  } catch (e) {
+    setTrimError(e.message);
+  } finally {
+    $("trim-save-btn").disabled = false;
+  }
+}
+
 $("find-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
@@ -439,6 +660,25 @@ $("logout-btn").addEventListener("click", async () => {
 
 $("output_format").addEventListener("change", updateGifFields);
 $("refresh-history-btn").addEventListener("click", () => loadHistory());
+
+$("trim-close-btn").addEventListener("click", closeTrimEditor);
+$("trim-modal").addEventListener("click", (e) => {
+  if (e.target === $("trim-modal")) closeTrimEditor();
+});
+$("trim-range-start").addEventListener("input", (e) => {
+  applyTrimStart(parseFloat(e.target.value));
+});
+$("trim-range-end").addEventListener("input", (e) => {
+  applyTrimEnd(parseFloat(e.target.value));
+});
+$("trim-input-start").addEventListener("change", (e) => {
+  applyTrimStart(parseFloat(e.target.value) || 0);
+});
+$("trim-input-end").addEventListener("change", (e) => {
+  applyTrimEnd(parseFloat(e.target.value) || trimState?.duration || 0);
+});
+$("trim-preview-btn").addEventListener("click", () => previewTrim());
+$("trim-save-btn").addEventListener("click", () => saveTrim());
 
 (async () => {
   if (await requireAuth()) {

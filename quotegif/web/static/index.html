@@ -169,6 +169,55 @@
       </div>
     </section>
   </div>
+
+  <div id="trim-modal" class="modal-backdrop hidden" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="trim-modal-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="trim-modal-title">Trim clip</h2>
+          <p id="trim-modal-quote" class="modal-quote"></p>
+        </div>
+        <button type="button" id="trim-close-btn" class="ghost-btn">Close</button>
+      </div>
+
+      <div class="trim-meta">
+        <span id="trim-duration-label">Duration: —</span>
+        <span id="trim-selection-label">Selection: —</span>
+      </div>
+
+      <div class="trim-slider">
+        <div class="trim-slider-rail"></div>
+        <div id="trim-selection-bar" class="trim-slider-selection"></div>
+        <input type="range" id="trim-range-start" min="0" max="100" step="0.05" value="0" />
+        <input type="range" id="trim-range-end" min="0" max="100" step="0.05" value="100" />
+      </div>
+
+      <div class="trim-inputs">
+        <label class="field">
+          <span>Start (seconds)</span>
+          <input id="trim-input-start" type="number" min="0" step="0.05" />
+        </label>
+        <label class="field">
+          <span>End (seconds)</span>
+          <input id="trim-input-end" type="number" min="0" step="0.05" />
+        </label>
+      </div>
+
+      <div id="trim-source-preview" class="trim-preview-panel">
+        <p class="idle-hint">Adjust handles to set in/out points.</p>
+      </div>
+
+      <p id="trim-error" class="trim-error hidden"></p>
+
+      <div id="trim-result-preview" class="trim-preview-panel hidden"></div>
+
+      <div class="trim-actions">
+        <button type="button" id="trim-preview-btn" class="ghost-btn">Preview trim</button>
+        <button type="button" id="trim-save-btn" class="primary">Save as new clip</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

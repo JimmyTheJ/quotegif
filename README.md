@@ -387,6 +387,8 @@ Each web user gets a private folder under the configured output directory:
 
 Web find jobs write only into the logged-in user's folder (`QUOTEGIF_OUTPUT_DIR` is overridden per job). The UI shows **Your history** — all past queries and rendered files for that account. Download/preview URLs are scoped to the owner; other users cannot access another user's paths via the API.
 
+**Trim edits:** completed clips and GIFs in history have a **Trim** action. Drag the in/out handles (or type seconds), preview the shortened version, then **Save as new clip**. That runs ffmpeg only — no LLM or Whisper — and adds a **new** history row linked to the source (`parent_id` + edit metadata in `params_json`). The original file is left unchanged.
+
 On Docker, these live under your host `QUOTEGIF_HOST_OUTPUT` mount (e.g. `/output/user_1/` inside the container).
 
 | Variable | Default | Purpose |

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 from pathlib import Path
@@ -20,13 +21,16 @@ from quotegif.web.cli_runner import CliFindParams
 from quotegif.web.db import (
     authenticate,
     bootstrap_user_from_env,
+    create_completed_edit_history,
     get_find_history,
     get_user_id,
     init_db,
     list_find_history,
     user_count,
 )
-from quotegif.web.paths import resolve_user_output_file, user_output_dir
+from quotegif.web.edit_preview import create_preview_path, get_preview_path, register_preview
+from quotegif.web.paths import is_path_in_user_output, resolve_user_output_file, user_output_dir
+from quotegif.web.trim import build_trim_output_path, probe_duration, trim_media
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -76,6 +80,11 @@ class ContinueRequest(BaseModel):
     media_path: str | None = None
 
 
+class TrimRequest(BaseModel):
+    trim_start: float = Field(ge=0, description="Seconds from the start of the source file")
+    trim_end: float = Field(gt=0, description="Seconds from the start of the source file")
+
+
 def _provider_status(cfg) -> list[dict[str, Any]]:
     rows = []
     for name in KNOWN_PROVIDERS:
@@ -104,8 +113,6 @@ def _safe_output_path(output_path: str, username: str) -> Path:
 
 
 def _history_row_to_dict(row, *, username: str) -> dict[str, Any]:
-    import json
-
     params = json.loads(row["params_json"])
     item: dict[str, Any] = {
         "id": row["id"],
@@ -120,10 +127,20 @@ def _history_row_to_dict(row, *, username: str) -> dict[str, Any]:
         "episode": params.get("episode"),
         "movie": params.get("movie"),
     }
+    parent_id = row["parent_id"] if "parent_id" in row.keys() else None
+    if parent_id:
+        item["parent_id"] = parent_id
+    edit = params.get("edit")
+    if edit:
+        item["edit"] = edit
+        item["edit_summary"] = edit.get("summary") or (
+            f"Trimmed {edit.get('trim_start', 0):.1f}s–{edit.get('trim_end', 0):.1f}s"
+        )
     if row["status"] == "completed" and row["output_path"]:
         item["output_path"] = row["output_path"]
         item["output_url"] = f"/api/history/{row['id']}/output"
         item["download_url"] = f"/api/history/{row['id']}/output?download=1"
+        item["can_edit"] = True
     return item
 
 
@@ -301,6 +318,202 @@ def get_history_output(
         raise HTTPException(status_code=404, detail="Output not found")
 
     path = _safe_output_path(row["output_path"], user)
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name if download else None,
+        content_disposition_type="attachment" if download else "inline",
+    )
+
+
+def _format_secs(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m = int(seconds // 60)
+    s = seconds % 60
+    return f"{m}:{s:04.1f}"
+
+
+def _history_source_for_edit(row, username: str) -> tuple[Path, float, str]:
+    if row["status"] != "completed" or not row["output_path"]:
+        raise HTTPException(status_code=400, detail="Only completed clips can be edited")
+    path = _safe_output_path(row["output_path"], username)
+    duration = probe_duration(path)
+    output_format = row["output_format"] or (
+        "gif" if path.suffix.lower() == ".gif" else "clip"
+    )
+    return path, duration, output_format
+
+
+def _validate_trim_range(duration: float, trim_start: float, trim_end: float) -> None:
+    if trim_end > duration + 0.05:
+        raise HTTPException(
+            status_code=400,
+            detail=f"trim_end ({trim_end:.1f}s) exceeds clip duration ({duration:.1f}s)",
+        )
+    if trim_end <= trim_start:
+        raise HTTPException(status_code=400, detail="trim_end must be greater than trim_start")
+    if trim_end - trim_start < 0.1:
+        raise HTTPException(status_code=400, detail="Selection must be at least 0.1 seconds")
+
+
+def _build_trim_params(
+    parent_row,
+    *,
+    source_path: Path,
+    source_duration: float,
+    trim_start: float,
+    trim_end: float,
+    output_format: str,
+) -> dict[str, Any]:
+    parent_params = json.loads(parent_row["params_json"])
+    summary = (
+        f"Trimmed {_format_secs(trim_start)}–{_format_secs(trim_end)} "
+        f"(was {_format_secs(source_duration)})"
+    )
+    return {
+        **{k: parent_params.get(k) for k in ("show", "episode", "movie", "output_format")},
+        "output_format": output_format,
+        "source": "edit",
+        "edit": {
+            "kind": "trim",
+            "parent_id": parent_row["id"],
+            "source_path": str(source_path),
+            "source_duration": source_duration,
+            "trim_start": trim_start,
+            "trim_end": trim_end,
+            "summary": summary,
+        },
+    }
+
+
+@app.get("/api/history/{history_id}/edit")
+def get_history_edit_info(history_id: str, user: CurrentUser) -> dict[str, Any]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    row = get_find_history(history_id, user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="History entry not found")
+
+    path, duration, output_format = _history_source_for_edit(row, user)
+    params = json.loads(row["params_json"])
+
+    return {
+        "id": row["id"],
+        "quote": row["quote"],
+        "duration": duration,
+        "output_format": output_format,
+        "source_url": f"/api/history/{history_id}/output",
+        "filename": path.name,
+        "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+        "show": params.get("show"),
+        "episode": params.get("episode"),
+    }
+
+
+@app.post("/api/history/{history_id}/trim/preview")
+def preview_history_trim(
+    history_id: str,
+    body: TrimRequest,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    row = get_find_history(history_id, user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="History entry not found")
+
+    source, duration, output_format = _history_source_for_edit(row, user)
+    _validate_trim_range(duration, body.trim_start, body.trim_end)
+
+    out_dir = user_output_dir(user)
+    token, preview_path = create_preview_path(out_dir, source.suffix)
+    try:
+        trim_media(source, preview_path, body.trim_start, body.trim_end)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    register_preview(token, user, preview_path)
+    return {
+        "preview_token": token,
+        "preview_url": f"/api/edit-preview/{token}",
+        "trim_start": body.trim_start,
+        "trim_end": body.trim_end,
+        "duration": body.trim_end - body.trim_start,
+        "output_format": output_format,
+    }
+
+
+@app.post("/api/history/{history_id}/trim")
+def save_history_trim(
+    history_id: str,
+    body: TrimRequest,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    import uuid as uuid_mod
+
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    row = get_find_history(history_id, user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="History entry not found")
+
+    source, duration, output_format = _history_source_for_edit(row, user)
+    _validate_trim_range(duration, body.trim_start, body.trim_end)
+
+    out_path = build_trim_output_path(source, body.trim_start, body.trim_end)
+    try:
+        trim_media(source, out_path, body.trim_start, body.trim_end)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    new_id = uuid_mod.uuid4().hex
+    params = _build_trim_params(
+        row,
+        source_path=source,
+        source_duration=duration,
+        trim_start=body.trim_start,
+        trim_end=body.trim_end,
+        output_format=output_format,
+    )
+    create_completed_edit_history(
+        new_id,
+        user_id,
+        row["quote"],
+        params,
+        str(out_path),
+        output_format,
+        parent_id=history_id,
+    )
+
+    new_row = get_find_history(new_id, user_id)
+    assert new_row is not None
+    return {
+        "item": _history_row_to_dict(new_row, username=user),
+        "message": params["edit"]["summary"],
+    }
+
+
+@app.get("/api/edit-preview/{token}")
+def get_edit_preview(
+    token: str,
+    user: CurrentUser,
+    download: Annotated[int, Query()] = 0,
+) -> FileResponse:
+    path = get_preview_path(token, user)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Preview not found or expired")
+
+    if not is_path_in_user_output(path, user):
+        raise HTTPException(status_code=403, detail="Preview path is not accessible")
+
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(
         path,
