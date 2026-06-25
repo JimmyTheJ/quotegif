@@ -12,7 +12,7 @@ COPY pyproject.toml README.md ./
 # Stub the package so pip can resolve extras without the full source tree
 RUN mkdir -p quotegif && touch quotegif/__init__.py
 
-RUN pip install --no-cache-dir -e ".[openai,anthropic,ollama,whisper]"
+RUN pip install --no-cache-dir -e ".[openai,anthropic,ollama,whisper,web]"
 
 # Now copy the real source (invalidates only this layer on code changes)
 COPY quotegif/ quotegif/

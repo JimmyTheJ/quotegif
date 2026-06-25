@@ -4,6 +4,29 @@ name: quotegif
 # Set these two in your .env:
 #   QUOTEGIF_HOST_MEDIA=/path/to/your/video/library
 #   QUOTEGIF_HOST_OUTPUT=/path/to/where/gifs/are/saved
+#
+# Web UI (persistent server, not one-shot like the CLI):
+#   docker compose --profile web up -d quotegif-web
+#   docker compose --profile web --profile gpu up -d quotegif-web-gpu
+# Attach to a shared Docker network via docker-compose.override.yml (see README).
+
+x-quotegif-env: &quotegif-env
+  QUOTEGIF_MEDIA_FOLDERS: /media
+  QUOTEGIF_OUTPUT_DIR: /output
+
+x-quotegif-volumes: &quotegif-volumes
+  - ${QUOTEGIF_HOST_MEDIA:?Set QUOTEGIF_HOST_MEDIA in .env}:/media:ro
+  - ${QUOTEGIF_HOST_OUTPUT:?Set QUOTEGIF_HOST_OUTPUT in .env}:/output
+  - quotegif-index:/root/.cache/quotegif
+  - quotegif-whisper:/root/.cache/huggingface
+
+x-web-service-env: &web-service-env
+  QUOTEGIF_MEDIA_FOLDERS: /media
+  QUOTEGIF_OUTPUT_DIR: /output
+  QUOTEGIF_WEB_HOST: "0.0.0.0"
+  QUOTEGIF_WEB_PORT: "8765"
+  QUOTEGIF_WEB_DB: /data/web.db
+  QUOTEGIF_NONINTERACTIVE: "1"
 
 services:
   quotegif:
@@ -15,18 +38,14 @@ services:
       - path: .env
         required: false
     environment:
-      QUOTEGIF_MEDIA_FOLDERS: /media
-      QUOTEGIF_OUTPUT_DIR: /output
-    volumes: &quotegif-volumes
-      - ${QUOTEGIF_HOST_MEDIA:?Set QUOTEGIF_HOST_MEDIA in .env}:/media:ro
-      - ${QUOTEGIF_HOST_OUTPUT:?Set QUOTEGIF_HOST_OUTPUT in .env}:/output
-      - quotegif-index:/root/.cache/quotegif
-      - quotegif-whisper:/root/.cache/huggingface
+      <<: *quotegif-env
+    volumes: *quotegif-volumes
     stdin_open: true
     tty: true
+    networks:
+      - quotegif
 
   # GPU variant — ./qg-gpu  or  docker compose --profile gpu run --rm quotegif-gpu
-  # Separate image (quotegif:gpu) built from Dockerfile.gpu with CUDA/cuBLAS libraries.
   quotegif-gpu:
     profiles:
       - gpu
@@ -38,8 +57,7 @@ services:
       - path: .env
         required: false
     environment:
-      QUOTEGIF_MEDIA_FOLDERS: /media
-      QUOTEGIF_OUTPUT_DIR: /output
+      <<: *quotegif-env
       QUOTEGIF_WHISPER_DEVICE: cuda
     volumes: *quotegif-volumes
     stdin_open: true
@@ -51,9 +69,77 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    networks:
+      - quotegif
+
+  # Web UI (CPU) — browser interface; runs `quotegif find` inside the container.
+  quotegif-web:
+    profiles:
+      - web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: quotegif:cpu
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *web-service-env
+    volumes:
+      - ${QUOTEGIF_HOST_MEDIA:?Set QUOTEGIF_HOST_MEDIA in .env}:/media:ro
+      - ${QUOTEGIF_HOST_OUTPUT:?Set QUOTEGIF_HOST_OUTPUT in .env}:/output
+      - quotegif-index:/root/.cache/quotegif
+      - quotegif-web-data:/data
+    ports:
+      - "${QUOTEGIF_WEB_BIND:-127.0.0.1}:${QUOTEGIF_WEB_PORT:-8765}:8765"
+    entrypoint: ["python", "-m", "quotegif.web"]
+    restart: unless-stopped
+    networks:
+      - quotegif
+
+  # Web UI (GPU) — same as quotegif-web but CUDA Whisper for find jobs.
+  quotegif-web-gpu:
+    profiles:
+      - web
+      - gpu
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: quotegif:gpu
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *web-service-env
+      QUOTEGIF_WHISPER_DEVICE: cuda
+    volumes:
+      - ${QUOTEGIF_HOST_MEDIA:?Set QUOTEGIF_HOST_MEDIA in .env}:/media:ro
+      - ${QUOTEGIF_HOST_OUTPUT:?Set QUOTEGIF_HOST_OUTPUT in .env}:/output
+      - quotegif-index:/root/.cache/quotegif
+      - quotegif-whisper:/root/.cache/huggingface
+      - quotegif-web-data:/data
+    ports:
+      - "${QUOTEGIF_WEB_BIND:-127.0.0.1}:${QUOTEGIF_WEB_PORT:-8765}:8765"
+    entrypoint: ["python", "-m", "quotegif.web"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - quotegif
 
 volumes:
   quotegif-index:
     driver: local
   quotegif-whisper:
     driver: local
+  quotegif-web-data:
+    driver: local
+
+networks:
+  quotegif:
+    driver: bridge

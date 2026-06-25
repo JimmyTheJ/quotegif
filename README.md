@@ -103,12 +103,14 @@ Docker packages Python, ffmpeg, and all dependencies so you don't need to instal
 
 ### How it works
 
-This is a CLI tool, not a server. Docker Compose doesn't run a persistent container you send commands to — instead, each command spins up a fresh container, runs, and exits:
+**CLI (one-shot):** each command spins up a fresh container, runs, and exits:
 
 ```bash
 docker compose run --rm quotegif find "no soup for you"
 #                  ^^^^^^^^^^^^^^^^ boilerplate every time
 ```
+
+**Web UI (persistent):** optional long-running service — see [Web UI in Docker](#web-ui-in-docker) below.
 
 To avoid typing all that, use the included wrapper script:
 
@@ -190,6 +192,43 @@ Or without the wrapper:
 docker compose --profile gpu run --rm quotegif-gpu find "winter is coming"
 ```
 
+### Web UI in Docker
+
+The browser UI runs as a **persistent** container (not `run --rm`). It listens on port **8765** and runs `quotegif find` inside the same container (GPU image recommended for Whisper).
+
+```bash
+# Build GPU image (includes web + CUDA Whisper)
+docker compose --profile gpu --profile web build quotegif-web-gpu
+
+# Start in background
+chmod +x qg-web-gpu
+./qg-web-gpu up -d quotegif-web-gpu
+
+# Create a login user (first time)
+./qg-web-gpu exec quotegif-web-gpu quotegif-web-create-user jamus
+
+# Or bootstrap from .env: QUOTEGIF_WEB_USERNAME / QUOTEGIF_WEB_PASSWORD / QUOTEGIF_WEB_SECRET
+```
+
+Open **http://localhost:8765** (or your host IP if `QUOTEGIF_WEB_BIND=0.0.0.0` in `.env`).
+
+| Service | Profiles | Image | GPU |
+|---------|----------|-------|-----|
+| `quotegif-web` | `web` | CPU | No |
+| `quotegif-web-gpu` | `web`, `gpu` | CUDA | Yes |
+
+CPU-only web: `docker compose --profile web up -d quotegif-web`
+
+**Shared Docker network** (reverse proxy, Home Assistant, etc.):
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
+# Edit: set your external network name under `networks`
+./qg-web-gpu up -d quotegif-web-gpu
+```
+
+Other containers on that network reach the UI at `http://quotegif-web-gpu:8765`.
+
 ### Volume layout
 
 | Container path | Purpose | Configured in |
@@ -198,6 +237,7 @@ docker compose --profile gpu run --rm quotegif-gpu find "winter is coming"
 | `/output` | GIF output (read-write) | `docker-compose.yml` → `volumes.output.driver_opts.device` |
 | `quotegif-index` (named) | Library index cache | Docker-managed |
 | `quotegif-whisper` (named) | Whisper model weights | Docker-managed |
+| `quotegif-web-data` (named) | Web UI SQLite (users, login attempts) | Docker-managed |
 
 > **Multiple media folders:** Point the `media` volume's `device` at a single parent directory and organise subdirectories under it (`TV/`, `Movies/`, etc.). The container indexes `/media` recursively.
 

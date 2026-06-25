@@ -1,0 +1,19 @@
+# Example override: attach the web UI to an existing Docker network
+# so other containers (reverse proxy, Home Assistant, etc.) can reach it.
+#
+# Copy to docker-compose.override.yml and edit the network name:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#
+# Then: ./qg-web-gpu up -d quotegif-web-gpu
+#
+# Other containers on `my-shared-network` can use http://quotegif-web-gpu:8765
+
+services:
+  quotegif-web-gpu:
+    networks:
+      - quotegif
+      - my-shared-network
+
+networks:
+  my-shared-network:
+    external: true
