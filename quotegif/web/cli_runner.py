@@ -24,6 +24,7 @@ class CliFindParams:
     quote: str
     pad_before: float | None = None
     pad_after: float | None = None
+    max_duration: float | None = None
     fps: int | None = None
     width: int | None = None
     provider: str | None = None
@@ -46,6 +47,7 @@ def cli_find_params_to_dict(params: CliFindParams) -> dict:
         "quote": params.quote,
         "pad_before": params.pad_before,
         "pad_after": params.pad_after,
+        "max_duration": params.max_duration,
         "fps": params.fps,
         "width": params.width,
         "provider": params.provider,
@@ -96,6 +98,8 @@ def build_find_argv(params: CliFindParams) -> list[str]:
         cmd += ["--pad-before", str(params.pad_before)]
     if params.pad_after is not None:
         cmd += ["--pad-after", str(params.pad_after)]
+    if params.max_duration is not None:
+        cmd += ["--max-duration", str(params.max_duration)]
     if params.fps is not None:
         cmd += ["--fps", str(params.fps)]
     if params.width is not None:

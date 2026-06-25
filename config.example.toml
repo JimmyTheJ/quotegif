@@ -16,7 +16,7 @@ output_dir = "~/quotegifs"
 # ----- Clip padding -----
 pad_before = 1.5   # seconds before the matched cue starts
 pad_after  = 2.5   # seconds after the matched cue ends
-max_duration = 12  # hard cap on total clip length (seconds)
+max_duration = 12  # minimum safety cap; clip grows to fit pad_before + pad_after + cue
 
 # ----- GIF settings -----
 [gif]

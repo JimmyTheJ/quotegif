@@ -308,7 +308,7 @@ Full documented example in [`config.example.toml`](config.example.toml).
 | `output_dir` | `~/quotegifs` | Where to write GIF files |
 | `pad_before` | `1.5` | Seconds before quote start to include |
 | `pad_after` | `2.5` | Seconds after quote end to include |
-| `max_duration` | `12` | Maximum clip length in seconds |
+| `max_duration` | `12` | Minimum clip cap; actual length is at least pad_before + pad_after + cue length |
 | `gif.fps` | `12` | Frames per second |
 | `gif.width` | `480` | Output width in pixels |
 | `provider.name` | `"openai"` | Which LLM provider to use |
@@ -448,6 +448,7 @@ Whisper transcription        →  timestamp
 ## Tips
 
 - If the GIF misses the line, try adjusting `--pad-before` / `--pad-after`.
+- Large pads (e.g. 60s before + 15s after) produce a clip that long — the default `max_duration` no longer truncates them. Use `--max-duration` only if you want a hard upper limit.
 - For long movies with no subtitles, Whisper `large-v3` gives the best accuracy but is slow without a GPU.
 - Use `--episode` to skip the LLM step entirely when you already know the source.
 - Re-run `quotegif index` whenever you add new media.

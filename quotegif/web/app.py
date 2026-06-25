@@ -54,6 +54,7 @@ class FindRequest(BaseModel):
     quote: str = Field(min_length=1)
     pad_before: float | None = Field(default=None, ge=0)
     pad_after: float | None = Field(default=None, ge=0)
+    max_duration: float | None = Field(default=None, ge=1)
     fps: int | None = Field(default=None, ge=1, le=60)
     width: int | None = Field(default=None, ge=120, le=1920)
     provider: str | None = None
@@ -131,6 +132,7 @@ def _find_params_from_request(body: FindRequest) -> CliFindParams:
         quote=body.quote.strip(),
         pad_before=body.pad_before,
         pad_after=body.pad_after,
+        max_duration=body.max_duration,
         fps=body.fps,
         width=body.width,
         provider=body.provider,

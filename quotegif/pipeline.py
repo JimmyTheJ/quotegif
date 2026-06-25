@@ -15,7 +15,7 @@ from quotegif.matcher import (
     match_quote,
     top_quote_matches,
 )
-from quotegif.models import ClipSpec, EpisodeRef, SubCue
+from quotegif.models import ClipSpec, EpisodeRef, SubCue, resolve_effective_max_duration
 from quotegif.subtitles import get_cue_source, get_cues
 
 OutputFormat = Literal["clip", "gif"]
@@ -74,6 +74,7 @@ def locate_quote(
     media_path: Path,
     *,
     around_seconds: float | None = None,
+    max_duration_cap: float | None = None,
 ) -> LocateResult:
     """
     Find the quote timestamp in media_path using subtitles (Whisper fallback).
@@ -230,8 +231,21 @@ def locate_quote(
         cue=best_cue,
         pad_before=cfg.pad_before,
         pad_after=cfg.pad_after,
-        max_duration=cfg.max_duration,
+        max_duration=resolve_effective_max_duration(
+            best_cue,
+            cfg.pad_before,
+            cfg.pad_after,
+            cfg.max_duration,
+            hard_cap=max_duration_cap,
+        ),
     )
+    if v.is_verbose():
+        natural = spec.duration
+        v.log(
+            f"Clip window: {spec.clip_start:.1f}s – {spec.clip_end:.1f}s "
+            f"({natural:.1f}s, pads {cfg.pad_before}/{cfg.pad_after}s, "
+            f"max_duration {spec.max_duration:.1f}s)"
+        )
     return LocateResult(
         media_path=media_path,
         spec=spec,

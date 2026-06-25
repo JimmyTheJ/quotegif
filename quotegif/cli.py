@@ -49,6 +49,10 @@ def find(
     quote: Annotated[str, typer.Argument(help="The quote to search for (vague is fine)")],
     pad_before: Annotated[float, typer.Option("--pad-before", help="Seconds before quote start")] = -1,
     pad_after: Annotated[float, typer.Option("--pad-after", help="Seconds after quote end")] = -1,
+    max_duration: Annotated[float, typer.Option(
+        "--max-duration",
+        help="Hard cap on total clip length in seconds (default: from config; pads can extend it)",
+    )] = -1,
     fps: Annotated[int, typer.Option("--fps", help="GIF frames per second")] = -1,
     width: Annotated[int, typer.Option("--width", help="GIF pixel width")] = -1,
     provider: Annotated[Optional[str], typer.Option("--provider", help="LLM provider: openai | anthropic | ollama")] = None,
@@ -329,6 +333,7 @@ def find(
                     cfg,
                     media_path,
                     around_seconds=around_seconds,
+                    max_duration_cap=max_duration if max_duration >= 0 else None,
                 )
     except LookupError as e:
         err_console.print(f"[red]{e}[/red]")

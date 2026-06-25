@@ -60,6 +60,33 @@ class ClipSpec:
         return self.clip_end - self.clip_start
 
 
+def padded_clip_length(cue: SubCue, pad_before: float, pad_after: float) -> float:
+    """Seconds needed to include the full cue plus both pads."""
+    cue_len = max(0.0, cue.end - cue.start)
+    return pad_before + pad_after + cue_len
+
+
+def resolve_effective_max_duration(
+    cue: SubCue,
+    pad_before: float,
+    pad_after: float,
+    config_max_duration: float,
+    *,
+    hard_cap: float | None = None,
+) -> float:
+    """
+  The clip ceiling must be at least as long as the padded cue window.
+
+  Default config max_duration (12s) is a safety cap for short GIFs, but it must
+  not truncate an explicit pad_before/pad_after request (e.g. 60s + 15s).
+    """
+    padded_len = padded_clip_length(cue, pad_before, pad_after)
+    effective = max(config_max_duration, padded_len)
+    if hard_cap is not None and hard_cap >= 0:
+        effective = min(effective, hard_cap)
+    return effective
+
+
 @dataclass
 class MediaEntry:
     """A video file in the library index."""

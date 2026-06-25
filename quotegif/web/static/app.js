@@ -58,6 +58,7 @@ function buildPayload() {
 
   const padBefore = $("pad_before").value;
   const padAfter = $("pad_after").value;
+  const maxDuration = $("max_duration").value;
   const fps = $("fps").value;
   const width = $("width").value;
   const around = $("around").value.trim();
@@ -67,6 +68,7 @@ function buildPayload() {
 
   if (padBefore !== "") payload.pad_before = parseFloat(padBefore);
   if (padAfter !== "") payload.pad_after = parseFloat(padAfter);
+  if (maxDuration !== "") payload.max_duration = parseFloat(maxDuration);
   if (fps !== "") payload.fps = parseInt(fps, 10);
   if (width !== "") payload.width = parseInt(width, 10);
   if (around) payload.around = around;
@@ -89,6 +91,7 @@ async function loadConfig() {
 
     $("pad_before").placeholder = String(cfg.pad_before);
     $("pad_after").placeholder = String(cfg.pad_after);
+    $("max_duration").placeholder = String(cfg.max_duration);
     $("fps").placeholder = String(cfg.gif.fps);
     $("width").placeholder = String(cfg.gif.width);
 
