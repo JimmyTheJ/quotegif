@@ -8,6 +8,46 @@ from pathlib import Path
 
 from quotegif.models import SubCue
 _SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt"}
+_SRT_TS_RE = re.compile(
+    r"(-?\d+)[:,.，．。：](-?\d+)[:,.，．。：](-?\d+)[:,.，．。：]?(\d*)",
+)
+
+
+def _normalize_srt_timestamp(ts: str) -> str:
+    """Clamp negative or broken SRT timestamp fields to HH:MM:SS,mmm."""
+    ts = ts.strip()
+    match = _SRT_TS_RE.match(ts)
+    if not match:
+        return ts
+    h = max(0, int(match.group(1)))
+    m = max(0, int(match.group(2)))
+    s = max(0, int(match.group(3)))
+    ms = (match.group(4) or "0").ljust(3, "0")[:3]
+    return f"{h:02d}:{m:02d}:{s:02d},{ms}"
+
+
+def _sanitize_srt_text(text: str) -> str:
+    """Repair malformed timestamps common in ffmpeg subtitle extraction."""
+    lines: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if "-->" in line:
+            start_raw, end_raw = line.split("-->", 1)
+            line = (
+                f"{_normalize_srt_timestamp(start_raw)}"
+                f" --> "
+                f"{_normalize_srt_timestamp(end_raw)}"
+            )
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _sanitize_srt_file(path: Path) -> None:
+    """Rewrite an on-disk .srt file with repaired timestamps."""
+    if path.suffix.lower() != ".srt":
+        return
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    path.write_text(_sanitize_srt_text(raw), encoding="utf-8")
+
 
 # Bitmap subtitle codecs cannot be converted to searchable text.
 _BITMAP_SUB_CODECS = frozenset({
@@ -118,6 +158,7 @@ def extract_sidecar_srt(
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise RuntimeError("ffmpeg produced an empty subtitle file.")
 
+    _sanitize_srt_file(out_path)
     cues = _parse_srt(out_path)
     if not cues:
         out_path.unlink(missing_ok=True)
@@ -201,6 +242,8 @@ def _extract_embedded_subs(
             timeout=60,
         )
         if result.returncode == 0 and out_path.stat().st_size > 0:
+            if suffix == ".srt":
+                _sanitize_srt_file(out_path)
             return out_path
     except Exception:
         pass
@@ -208,26 +251,49 @@ def _extract_embedded_subs(
     return None
 
 
-def _parse_srt(path: Path) -> list[SubCue]:
+def _iter_srt_subtitles(text: str):
+    """Parse SRT text, repairing common ffmpeg extraction defects when needed."""
     try:
         import srt
     except ImportError as e:
         raise ImportError("srt package not installed. Run: pip install quotegif") from e
 
+    normalized = text.replace("\r\n", "\n")
+    for parser in (
+        lambda data: srt.parse(data),
+        lambda data: srt.parse(_sanitize_srt_text(data)),
+        lambda data: srt.parse(_sanitize_srt_text(data), ignore_errors=True),
+    ):
+        try:
+            yield from parser(normalized)
+            return
+        except srt.SRTParseError:
+            continue
+
+
+def _parse_srt(path: Path) -> list[SubCue]:
     text = path.read_text(encoding="utf-8", errors="replace")
     cues: list[SubCue] = []
-    for sub in srt.parse(text):
+    prev_end = 0.0
+    for sub in _iter_srt_subtitles(text):
         clean = re.sub(r"<[^>]+>", " ", sub.content)
         clean = re.sub(r"\{[^}]+\}", " ", clean)
         clean = re.sub(r"\s+", " ", clean).strip()
         if not clean:
             continue
+        start = sub.start.total_seconds()
+        end = sub.end.total_seconds()
+        if start >= end:
+            start = prev_end
+        if start >= end and end > 0:
+            start = max(0.0, end - 0.5)
         cues.append(SubCue(
-            start=sub.start.total_seconds(),
-            end=sub.end.total_seconds(),
+            start=start,
+            end=end,
             text=clean,
             index=sub.index,
         ))
+        prev_end = end
     return cues
 
 
