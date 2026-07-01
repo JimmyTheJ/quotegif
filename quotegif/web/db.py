@@ -82,6 +82,8 @@ def _migrate_find_history(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(find_history)")}
     if "parent_id" not in cols:
         conn.execute("ALTER TABLE find_history ADD COLUMN parent_id TEXT")
+    if "archived_at" not in cols:
+        conn.execute("ALTER TABLE find_history ADD COLUMN archived_at TEXT")
 
 
 def _now() -> datetime:
@@ -342,15 +344,26 @@ def update_find_history(
         )
 
 
-def list_find_history(user_id: int, *, limit: int = 100) -> list[sqlite3.Row]:
+_HISTORY_SELECT = """
+    SELECT id, quote, params_json, status, output_path, output_format,
+           error, created_at, updated_at, completed_at, parent_id, archived_at
+    FROM find_history
+"""
+
+
+def list_find_history(
+    user_id: int,
+    *,
+    limit: int = 100,
+    archived: bool = False,
+) -> list[sqlite3.Row]:
     init_db()
+    archived_clause = "archived_at IS NOT NULL" if archived else "archived_at IS NULL"
     with _connect() as conn:
         rows = conn.execute(
-            """
-            SELECT id, quote, params_json, status, output_path, output_format,
-                   error, created_at, updated_at, completed_at, parent_id
-            FROM find_history
-            WHERE user_id = ?
+            f"""
+            {_HISTORY_SELECT}
+            WHERE user_id = ? AND {archived_clause}
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -363,11 +376,71 @@ def get_find_history(job_id: str, user_id: int) -> sqlite3.Row | None:
     init_db()
     with _connect() as conn:
         return conn.execute(
-            """
-            SELECT id, quote, params_json, status, output_path, output_format,
-                   error, created_at, updated_at, completed_at, parent_id
-            FROM find_history
+            f"""
+            {_HISTORY_SELECT}
             WHERE id = ? AND user_id = ?
             """,
             (job_id, user_id),
         ).fetchone()
+
+
+def delete_find_history(job_id: str, user_id: int) -> bool:
+    """Delete a history row. Only allowed when status is not completed."""
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM find_history WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "completed":
+            raise ValueError("Cannot delete completed history entries; archive them instead")
+        conn.execute(
+            "DELETE FROM find_history WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        )
+    return True
+
+
+def delete_incomplete_find_history(user_id: int) -> int:
+    """Delete all non-completed history rows for a user. Returns count removed."""
+    init_db()
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM find_history
+            WHERE user_id = ? AND status != 'completed'
+            """,
+            (user_id,),
+        )
+    return int(cur.rowcount)
+
+
+def set_find_history_archived(
+    job_id: str,
+    user_id: int,
+    *,
+    archived: bool,
+) -> bool:
+    """Archive or unarchive a completed history entry."""
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM find_history WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] != "completed":
+            raise ValueError("Only completed history entries can be archived")
+        archived_at = _iso(_now()) if archived else None
+        conn.execute(
+            """
+            UPDATE find_history
+            SET archived_at = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (archived_at, _iso(_now()), job_id, user_id),
+        )
+    return True

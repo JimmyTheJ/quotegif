@@ -5,6 +5,7 @@ let pollTimer = null;
 let currentUser = null;
 let trimState = null;
 let trimPreviewToken = null;
+let historyView = "active";
 
 const fetchOpts = { credentials: "same-origin" };
 
@@ -347,81 +348,202 @@ function showPreviewFromUrls(url, outputFormat, metaHtml) {
   }
 }
 
+function setHistoryView(view) {
+  historyView = view;
+  const activeTab = $("history-tab-active");
+  const archivedTab = $("history-tab-archived");
+  const clearBtn = $("clear-incomplete-btn");
+  const isActive = view === "active";
+
+  activeTab.classList.toggle("is-active", isActive);
+  archivedTab.classList.toggle("is-active", !isActive);
+  activeTab.setAttribute("aria-selected", String(isActive));
+  archivedTab.setAttribute("aria-selected", String(!isActive));
+  clearBtn.classList.toggle("hidden", !isActive);
+}
+
+function createHistoryActionButton(label, className, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className || "ghost-btn";
+  btn.textContent = label;
+  btn.onclick = onClick;
+  return btn;
+}
+
+function renderHistoryItem(item) {
+  const el = document.createElement("article");
+  el.className = "history-item";
+  if (item.id === currentJobId) el.classList.add("is-active");
+
+  const ep = [item.show, item.episode].filter(Boolean).join(" · ");
+  const editNote = item.edit_summary ? ` · ${item.edit_summary}` : "";
+  const parentNote = item.parent_id ? '<span class="history-badge">edited</span>' : "";
+  const sub = [ep, formatDate(item.created_at), item.output_format || ""]
+    .filter(Boolean)
+    .join(" · ");
+
+  el.innerHTML = `
+    <div class="history-item-top">
+      <div>
+        <p class="history-quote">“${escapeHtml(item.quote)}”${parentNote}</p>
+        <p class="history-sub">${escapeHtml(sub)}${escapeHtml(editNote)}</p>
+      </div>
+      <span class="history-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+    </div>
+  `;
+
+  if (item.status === "completed" && item.output_url) {
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const viewBtn = createHistoryActionButton("View", "ghost-btn", () => {
+      document.querySelectorAll(".history-item").forEach((n) => n.classList.remove("is-active"));
+      el.classList.add("is-active");
+      const metaParts = [escapeHtml(item.quote), escapeHtml(sub)];
+      if (item.edit_summary) metaParts.push(escapeHtml(item.edit_summary));
+      showPreviewFromUrls(
+        item.output_url,
+        item.output_format,
+        metaParts.map((p) => `<div>${p}</div>`).join("")
+      );
+      $("download-btn").href = item.download_url;
+    });
+    actions.appendChild(viewBtn);
+
+    if (historyView === "active" && item.can_edit) {
+      actions.appendChild(
+        createHistoryActionButton("Trim", "ghost-btn", () => openTrimEditor(item.id))
+      );
+    }
+
+    const dl = document.createElement("a");
+    dl.className = "button";
+    dl.href = item.download_url;
+    dl.textContent = "Download";
+    dl.download = "";
+    actions.appendChild(dl);
+
+    if (historyView === "active" && item.can_archive) {
+      actions.appendChild(
+        createHistoryActionButton("Archive", "ghost-btn", () => archiveHistoryItem(item.id))
+      );
+    } else if (historyView === "archived" && item.can_unarchive) {
+      actions.appendChild(
+        createHistoryActionButton("Unarchive", "ghost-btn", () => unarchiveHistoryItem(item.id))
+      );
+    }
+
+    el.appendChild(actions);
+  } else {
+    if (item.error) {
+      const err = document.createElement("p");
+      err.className = "history-sub";
+      err.textContent = item.error;
+      el.appendChild(err);
+    }
+    if (historyView === "active" && item.can_remove) {
+      const actions = document.createElement("div");
+      actions.className = "history-actions";
+      actions.appendChild(
+        createHistoryActionButton("Remove", "ghost-btn danger-btn", () => removeHistoryItem(item.id))
+      );
+      el.appendChild(actions);
+    }
+  }
+
+  return el;
+}
+
+async function removeHistoryItem(historyId) {
+  if (!confirm("Remove this incomplete query from your history?")) return;
+  const res = await fetch(`/api/history/${historyId}`, {
+    method: "DELETE",
+    ...fetchOpts,
+  });
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  await loadHistory();
+}
+
+async function clearIncompleteHistory() {
+  if (!confirm("Remove all queries that did not complete successfully?")) return;
+  const res = await fetch("/api/history/incomplete", {
+    method: "DELETE",
+    ...fetchOpts,
+  });
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  const data = await res.json();
+  await loadHistory();
+  if (data.removed > 0) {
+    $("history-output-dir").textContent =
+      `${$("history-output-dir").textContent.split(" · ")[0]} · Cleared ${data.removed} incomplete`;
+  }
+}
+
+async function archiveHistoryItem(historyId) {
+  const res = await fetch(`/api/history/${historyId}/archive`, {
+    method: "POST",
+    ...fetchOpts,
+  });
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  await loadHistory();
+}
+
+async function unarchiveHistoryItem(historyId) {
+  const res = await fetch(`/api/history/${historyId}/unarchive`, {
+    method: "POST",
+    ...fetchOpts,
+  });
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  setHistoryView("active");
+  await loadHistory();
+}
+
 async function loadHistory() {
   const list = $("history-list");
+  const archived = historyView === "archived" ? 1 : 0;
   try {
-    const res = await fetch("/api/history?limit=100", fetchOpts);
+    const res = await fetch(`/api/history?limit=100&archived=${archived}`, fetchOpts);
     if (!res.ok) throw new Error("Failed to load history");
     const data = await res.json();
     $("history-output-dir").textContent = `Your files: ${data.output_dir}`;
     if (!data.items.length) {
-      list.innerHTML = '<p class="idle-hint">No queries yet.</p>';
+      list.innerHTML =
+        historyView === "archived"
+          ? '<p class="idle-hint">No archived items.</p>'
+          : '<p class="idle-hint">No queries yet.</p>';
       return;
     }
     list.innerHTML = "";
     for (const item of data.items) {
-      const el = document.createElement("article");
-      el.className = "history-item";
-      if (item.id === currentJobId) el.classList.add("is-active");
-
-      const ep = [item.show, item.episode].filter(Boolean).join(" · ");
-      const editNote = item.edit_summary ? ` · ${item.edit_summary}` : "";
-      const parentNote = item.parent_id ? '<span class="history-badge">edited</span>' : "";
-      const sub = [ep, formatDate(item.created_at), item.output_format || ""]
-        .filter(Boolean)
-        .join(" · ");
-
-      el.innerHTML = `
-        <div class="history-item-top">
-          <div>
-            <p class="history-quote">“${escapeHtml(item.quote)}”${parentNote}</p>
-            <p class="history-sub">${escapeHtml(sub)}${escapeHtml(editNote)}</p>
-          </div>
-          <span class="history-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-        </div>
-      `;
-
-      if (item.status === "completed" && item.output_url) {
-        const actions = document.createElement("div");
-        actions.className = "history-actions";
-        const viewBtn = document.createElement("button");
-        viewBtn.type = "button";
-        viewBtn.className = "ghost-btn";
-        viewBtn.textContent = "View";
-        viewBtn.onclick = () => {
-          document.querySelectorAll(".history-item").forEach((n) => n.classList.remove("is-active"));
-          el.classList.add("is-active");
-          const metaParts = [escapeHtml(item.quote), escapeHtml(sub)];
-          if (item.edit_summary) metaParts.push(escapeHtml(item.edit_summary));
-          showPreviewFromUrls(
-            item.output_url,
-            item.output_format,
-            metaParts.map((p) => `<div>${p}</div>`).join("")
-          );
-          $("download-btn").href = item.download_url;
-        };
-        const editBtn = document.createElement("button");
-        editBtn.type = "button";
-        editBtn.className = "ghost-btn";
-        editBtn.textContent = "Trim";
-        editBtn.onclick = () => openTrimEditor(item.id);
-        const dl = document.createElement("a");
-        dl.className = "button";
-        dl.href = item.download_url;
-        dl.textContent = "Download";
-        dl.download = "";
-        actions.appendChild(viewBtn);
-        if (item.can_edit) actions.appendChild(editBtn);
-        actions.appendChild(dl);
-        el.appendChild(actions);
-      } else if (item.error) {
-        const err = document.createElement("p");
-        err.className = "history-sub";
-        err.textContent = item.error;
-        el.appendChild(err);
-      }
-
-      list.appendChild(el);
+      list.appendChild(renderHistoryItem(item));
     }
   } catch (e) {
     list.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
@@ -660,6 +782,19 @@ $("logout-btn").addEventListener("click", async () => {
 
 $("output_format").addEventListener("change", updateGifFields);
 $("refresh-history-btn").addEventListener("click", () => loadHistory());
+$("clear-incomplete-btn").addEventListener("click", () => {
+  clearIncompleteHistory().catch((e) => {
+    $("history-list").innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
+  });
+});
+$("history-tab-active").addEventListener("click", () => {
+  setHistoryView("active");
+  loadHistory();
+});
+$("history-tab-archived").addEventListener("click", () => {
+  setHistoryView("archived");
+  loadHistory();
+});
 
 $("trim-close-btn").addEventListener("click", closeTrimEditor);
 $("trim-modal").addEventListener("click", (e) => {
@@ -682,6 +817,7 @@ $("trim-save-btn").addEventListener("click", () => saveTrim());
 
 (async () => {
   if (await requireAuth()) {
+    setHistoryView("active");
     await loadConfig();
     updateGifFields();
     showIdle();

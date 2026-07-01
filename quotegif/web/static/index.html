@@ -160,8 +160,17 @@
 
     <section class="panel history-panel">
       <div class="history-header">
-        <h2>Your history</h2>
-        <button type="button" id="refresh-history-btn" class="ghost-btn">Refresh</button>
+        <div class="history-title-row">
+          <h2>Your history</h2>
+          <div class="history-tabs" role="tablist" aria-label="History view">
+            <button type="button" id="history-tab-active" class="history-tab is-active" role="tab" aria-selected="true">Active</button>
+            <button type="button" id="history-tab-archived" class="history-tab" role="tab" aria-selected="false">Archived</button>
+          </div>
+        </div>
+        <div class="history-header-actions">
+          <button type="button" id="clear-incomplete-btn" class="ghost-btn danger-btn">Clear incomplete</button>
+          <button type="button" id="refresh-history-btn" class="ghost-btn">Refresh</button>
+        </div>
       </div>
       <p id="history-output-dir" class="history-meta"></p>
       <div id="history-list" class="history-list">

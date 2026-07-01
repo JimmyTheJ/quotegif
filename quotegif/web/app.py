@@ -22,10 +22,13 @@ from quotegif.web.db import (
     authenticate,
     bootstrap_user_from_env,
     create_completed_edit_history,
+    delete_find_history,
+    delete_incomplete_find_history,
     get_find_history,
     get_user_id,
     init_db,
     list_find_history,
+    set_find_history_archived,
     user_count,
 )
 from quotegif.web.edit_preview import create_preview_path, get_preview_path, register_preview
@@ -141,6 +144,13 @@ def _history_row_to_dict(row, *, username: str) -> dict[str, Any]:
         item["output_url"] = f"/api/history/{row['id']}/output"
         item["download_url"] = f"/api/history/{row['id']}/output?download=1"
         item["can_edit"] = True
+        item["can_archive"] = not row["archived_at"]
+    if row["status"] != "completed":
+        item["can_remove"] = True
+    archived_at = row["archived_at"] if "archived_at" in row.keys() else None
+    if archived_at:
+        item["archived_at"] = archived_at
+        item["can_unarchive"] = True
     return item
 
 
@@ -292,15 +302,68 @@ def get_job_output(
 def get_history(
     user: CurrentUser,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    archived: Annotated[int, Query()] = 0,
 ) -> dict[str, Any]:
     user_id = get_user_id(user)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    rows = list_find_history(user_id, limit=limit)
+    rows = list_find_history(user_id, limit=limit, archived=bool(archived))
     return {
         "items": [_history_row_to_dict(row, username=user) for row in rows],
         "output_dir": str(user_output_dir(user)),
+        "archived": bool(archived),
     }
+
+
+@app.delete("/api/history/incomplete")
+def clear_incomplete_history(user: CurrentUser) -> dict[str, Any]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    removed = delete_incomplete_find_history(user_id)
+    return {"removed": removed}
+
+
+@app.delete("/api/history/{history_id}")
+def remove_history_entry(history_id: str, user: CurrentUser) -> dict[str, bool]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        ok = delete_find_history(history_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return {"ok": True}
+
+
+@app.post("/api/history/{history_id}/archive")
+def archive_history_entry(history_id: str, user: CurrentUser) -> dict[str, bool]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        ok = set_find_history_archived(history_id, user_id, archived=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return {"ok": True}
+
+
+@app.post("/api/history/{history_id}/unarchive")
+def unarchive_history_entry(history_id: str, user: CurrentUser) -> dict[str, bool]:
+    user_id = get_user_id(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        ok = set_find_history_archived(history_id, user_id, archived=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return {"ok": True}
 
 
 @app.get("/api/history/{history_id}/output")
